@@ -1,0 +1,48 @@
+{
+  "name": "ai-agent-bell",
+  "version": "1.0.0",
+  "description": "AI Agent Bell: a loud alarm when your AI coding agent finishes, fails, or needs your input. Works with OpenCode, Claude Code, Codex CLI and any terminal tool. Global-only: zero project impact, never ships in your build.",
+  "license": "MIT",
+  "author": "Hemant Rao",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hemant-rao/ai-agent-bell"
+  },
+  "bugs": {
+    "url": "https://github.com/hemant-rao/ai-agent-bell/issues"
+  },
+  "homepage": "https://github.com/hemant-rao/ai-agent-bell#readme",
+  "keywords": [
+    "opencode",
+    "claude-code",
+    "codex",
+    "ai",
+    "alarm",
+    "notification",
+    "terminal",
+    "hooks",
+    "plugin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "commonjs",
+  "main": "index.js",
+  "bin": {
+    "ai-agent-bell": "./bin/ai-agent-bell.js",
+    "ai-alarm": "./bin/ai-agent-bell.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "detectors/",
+    "notifications/",
+    "adapters/",
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --check bin/ai-agent-bell.js && node --check lib/alarm.js && node --check lib/config.js && node --check index.js && node --check detectors/index.js && node --check detectors/completion.js && node --check detectors/input-required.js && node --check detectors/error.js && node --check detectors/warning.js && node --check notifications/sound.js && node --check notifications/desktop.js && node --check notifications/terminal.js && node --check adapters/opencode-plugin.js && node tests/smoke.js"
+  }
+}

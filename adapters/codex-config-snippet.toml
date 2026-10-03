@@ -1,0 +1,18 @@
+# Append to GLOBAL ~/.codex/config.toml only. Never to a project .codex/ folder,
+# so the alarm never ships with your code. Repeat count is NOT set here: the
+# CLI reads ~/.config/ai-agent-bell/config.json at runtime
+# (ai-agent-bell config --times N). Requires: npm i -g ai-agent-bell.
+# Do NOT use a top-level `notify` key: a second `notify` would be a
+# duplicate-TOML-key parse error if you already have one.
+
+# >>> ai-agent-bell (global, safe to delete) >>>
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "npx -y ai-agent-bell --event complete"
+[[hooks.PermissionRequest]]
+matcher = ".*"
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "npx -y ai-agent-bell --event question"
+# <<< ai-agent-bell <<<

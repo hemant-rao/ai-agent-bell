@@ -1,0 +1,39 @@
+{
+  "_comment": "Paste into GLOBAL ~/.claude/settings.json only. Never into a project .claude/ folder, so the alarm never ships with your code. Repeat count is NOT set here: the CLI reads ~/.config/ai-agent-bell/config.json at runtime (ai-agent-bell config --times N). Requires: npm i -g ai-agent-bell (once per machine). NOTE: Stop fires per response/turn, not per whole task. StopFailure covers API-error turns.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y ai-agent-bell --event complete",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y ai-agent-bell --event error",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y ai-agent-bell --event question",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
