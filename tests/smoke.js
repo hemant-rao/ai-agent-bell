@@ -75,15 +75,48 @@ async function main() {
   check('unknown tool event -> null', detectors.forToolEvent('opencode', 'nope') === null);
   check('empty type -> null', detectors.forToolEvent('opencode', '') === null);
 
-  // --- B2. Windows loop script (pure string building, no sound) ---
+  // --- B2. Windows scripts (pure string building, no sound) ---
   const soundMod = require('../notifications/sound');
   for (const d of detectors.ALL) {
     const script = soundMod.buildWindowsLoop(d, 5);
     check(
-      `win loop ${d.id}: 5 rounds + click-exit + own freq`,
-      script.includes('$i -lt 5') && script.includes('exit 7') && script.includes(String(d.freq))
+      `win loop ${d.id}: 5 rounds + own freq, no window flags`,
+      script.includes('$i -lt 5') &&
+        script.includes(String(d.freq)) &&
+        !script.includes('WindowStyle') &&
+        !script.includes('exit 7')
     );
   }
+  const watcher = soundMod.buildWindowsWatcher();
+  check('watcher polls GetAsyncKeyState', watcher.includes('GetAsyncKeyState'));
+  check('watcher exits 7 on activity', watcher.includes('exit 7'));
+  check('watcher polls every 50ms', watcher.includes('Start-Sleep -Milliseconds 50'));
+  check('watcher covers mouse buttons', watcher.includes('@(1,2,4,'));
+  check('watcher primes stale input first', watcher.indexOf('Out-Null') < watcher.indexOf('while ($true)'));
+  // armKeyStop wiring with a fake TTY stdin (no real keys needed).
+  const { EventEmitter } = require('node:events');
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.setRawModeCalled = [];
+  fakeStdin.setRawMode = function (v) {
+    fakeStdin.setRawModeCalled.push(v);
+  };
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  let killed = 0;
+  const st = { stop: false, children: [{ kill() { killed++; } }], keyStop: true };
+  const disarmFn = soundMod.armKeyStop(st, fakeStdin);
+  fakeStdin.emit('data', Buffer.from('x'));
+  check('keypress sets stop flag', st.stop === true);
+  check('keypress kills tracked children', killed === 1);
+  check('raw mode entered', fakeStdin.setRawModeCalled.includes(true));
+  disarmFn();
+  check('raw mode restored on disarm', fakeStdin.setRawModeCalled.includes(false));
+  const plainStdin = new EventEmitter(); // no isTTY -> must stay silent
+  const st2 = { stop: false, children: [], keyStop: true };
+  soundMod.armKeyStop(st2, plainStdin);
+  plainStdin.emit('data', Buffer.from('x'));
+  check('non-TTY stdin ignored', st2.stop === false);
 
   // Packaging: every runtime require must ship on npm.
   const pkgFiles = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).files;

@@ -72,9 +72,11 @@ Small print, honestly told: in Claude Code, "finished" means one answer finished
 
 ## Made it stop? Easy.
 
-- **Click any mouse button** (Windows) — the bell stops at once.
-- **Press any key** in the terminal.
+- **Click any mouse button** (Windows) — even when the terminal is minimized or another app is open.
+- **Press any common key** (letters, digits, Space, Enter, Esc, F-keys) — also works when the terminal is minimized.
 - Or do nothing — it rings your chosen number of times and stops by itself.
+
+Nothing here ever minimizes or hides your windows — the bell only ever makes sound.
 
 ## Will it break my project? No.
 

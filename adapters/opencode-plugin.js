@@ -50,7 +50,7 @@ function fallbackBeep(kind) {
         : kind === 'error'
           ? `for ($i=0; $i -lt ${n}; $i++) { [console]::beep(${f},220); Start-Sleep -Milliseconds 150; [console]::beep(${f},220); Start-Sleep -Milliseconds 350 }`
           : `for ($i=0; $i -lt ${n}; $i++) { [console]::beep(${f},700); Start-Sleep -Milliseconds 200 }`;
-    cp.execFileSync('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], {
+    cp.execFileSync('powershell', ['-NoProfile', '-Command', script], {
       stdio: 'ignore',
       timeout: (n * 3 + 10) * 1000,
       windowsHide: true,

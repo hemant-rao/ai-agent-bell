@@ -14,8 +14,6 @@ function toast(title, message) {
         'powershell',
         [
           '-NoProfile',
-          '-WindowStyle',
-          'Hidden',
           '-Command',
           `if (Get-Module -ListAvailable -Name BurntToast) { New-BurntToastNotification -Text "${title}", "${message}" }`,
         ],
