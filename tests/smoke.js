@@ -39,6 +39,10 @@ function run(args, env = {}) {
 async function main() {
   // --- A. CLI arg validation (no side effects, no sound) ---
   check('--version exits 0', run(['--version']).status === 0);
+  check(
+    '--version matches package.json (never stale)',
+    run(['--version']).stdout.trim() === JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version
+  );
   const help = run(['--help']);
   check('--help exits 0 and documents setup', help.status === 0 && help.stdout.includes('setup'));
   check('unknown event exits 2', run(['--event', 'foo']).status === 2);
@@ -53,8 +57,35 @@ async function main() {
   check('--times 2.5 exits 2', run(['--times', '2.5']).status === 2);
   check('setup --tools foo exits 2', run(['setup', '--tools', 'foo']).status === 2);
   check('setup --times 0 exits 2', run(['setup', '--times', '0']).status === 2);
+  check('bare number out of range exits 2', run(['99']).status === 2);
+  check('two bare numbers exits 2', run(['3', '4']).status === 2);
+  check('flag plus bare number exits 2', run(['--times', '3', '4']).status === 2);
+  check('help documents number shortcut', help.stdout.includes('ai-agent-bell 5'));
   const cfgShow = run(['config']);
   check('config shows file path', cfgShow.status === 0 && cfgShow.stdout.includes('config.json'));
+
+  // Fresh machine (no config file yet) -> default x5, no setup needed.
+  const freshHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-fresh-'));
+  try {
+    const cfgDefault = run(['config'], { USERPROFILE: freshHome });
+    check(
+      'missing file -> default x5',
+      cfgDefault.status === 0 && cfgDefault.stdout.includes('alarm repeats: x5')
+    );
+  } finally {
+    fs.rmSync(freshHome, { recursive: true, force: true });
+  }
+  check('DEFAULT_TIMES is 5', require('../lib/config').DEFAULT_TIMES === 5);
+  const adapterSrc = fs.readFileSync(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'utf8');
+  check(
+    'adapter fallback default is 5 (no stale 10)',
+    adapterSrc.includes('return 5;') && !adapterSrc.includes('return 10;')
+  );
+  const cliSrc = fs.readFileSync(CLI, 'utf8');
+  check(
+    'test rings saved count unless overridden (no hardcoded 2)',
+    cliSrc.includes('opts.times ?? config.load().times')
+  );
 
   // --- B. detectors registry (pure data, no sound) ---
   const detectors = require('../detectors');
@@ -155,6 +186,20 @@ async function main() {
       fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
     );
     check('setup --times persists 7', afterSave.times === 7);
+
+    // Friendly CLI: bare numbers and plain-English filler words (silent: setup/config only).
+    const setPlain = run(['setup', 'alarm', 'repeats', '6'], { USERPROFILE: fakeHome });
+    check('plain-English setup exits 0', setPlain.status === 0);
+    const afterPlain = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check('plain-English setup persists 6', afterPlain.times === 6);
+    const setBare = run(['config', '9'], { USERPROFILE: fakeHome });
+    check('bare-number config exits 0', setBare.status === 0);
+    const afterBare = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check('bare-number config persists 9', afterBare.times === 9);
     const claude = JSON.parse(fs.readFileSync(path.join(fakeHome, '.claude', 'settings.json'), 'utf8'));
     check('claude custom key preserved', claude.keep === true);
     check('claude old hook preserved', JSON.stringify(claude.Stop).includes('lint'));

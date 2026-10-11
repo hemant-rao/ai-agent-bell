@@ -36,7 +36,7 @@ function readTimes() {
   } catch (_) {
     /* missing/corrupt config -> default */
   }
-  return 10;
+  return 5;
 }
 
 function fallbackBeep(kind) {

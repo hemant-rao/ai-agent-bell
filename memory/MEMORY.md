@@ -42,8 +42,13 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 
 1. **Repeat count** lives in ONE file: `~/.config/ai-agent-bell/config.json`
    (`{ "times": N }`, 1..30). Hooks call the CLI with no count; runtime
-   resolves flag → file → default 10. `setup --times N` / `config --times N`
-   writes it. `--duration` is a deprecated alias of `--times`.
+   resolves flag → file → default 5. `setup --times N` / `config --times N`
+   writes it. `--duration` is a deprecated alias of `--times`. Friendly CLI:
+   a bare number means `--times N` (`ai-agent-bell 5`, `setup 5`, `config 5`,
+   `test 3`); filler words (alarm, bell, repeat(s), time(s), ring(s)) are
+   ignored so plain attempts like `ai-agent-bell alarm repeats 3` just work.
+   `test` with no count rings the SAVED count (so a change is verifiable);
+   explicit `--times N` / bare number on `test` gives a custom quick check.
 2. **Early stop, global**: Windows watcher process polls
    `user32.GetAsyncKeyState` every 50ms (mouse L/R/M + Back/Tab/Enter/Esc/
    Space + 0-9 + A-Z + F1-F12), exits 7 on activity — works even when the
@@ -75,6 +80,9 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).
+- `1.0.2` (unreleased: repo only, not on npm yet) — default repeats 10 → 5
+  (config + opencode fallback + no-node snippets + docs); `test` rings the
+  saved count unless `--times N` / bare number given (previously hardcoded 2).
 - Publish flow: `npm version patch|minor|major` → `npm publish --access public`
   (auth via granular token in npmrc; OTP not used) → `npm i -g ai-agent-bell`
   + `ai-agent-bell test` as a stranger → `git push origin main` +

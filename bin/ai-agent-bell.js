@@ -7,14 +7,16 @@
  *   ai-agent-bell                              -> complete alarm (repeats from config file)
  *   ai-agent-bell --event question --times 5   -> input-needed alarm, 5 rounds, one-shot
  *   ai-agent-bell --event error                -> failed-task alarm (repeats from config file)
- *   ai-agent-bell test                         -> short 2-round sound check
+ *   ai-agent-bell test                         -> ring your saved count (proves a change worked)
  *   ai-agent-bell config                       -> show the repeat-count file and value
  *   ai-agent-bell config --times 8             -> ring 8 times from now on
+ *   ai-agent-bell 5  (= --times 5)             -> friendly shortcut, works after
+ *      setup / config too; filler words (alarm, repeats, ...) are ignored
  *   ai-agent-bell setup [--tools opencode,claude,codex] [--times 8]
  *   ai-agent-bell --help
  *
  * How many times it rings lives in ONE file:
- *   ~/.config/ai-agent-bell/config.json   { "times": 10 }
+ *   ~/.config/ai-agent-bell/config.json   { "times": 5 }
  * Hooks call the CLI without any count, so editing that file (or one
  * `setup --times N`) changes every tool at once — no re-setup needed.
  *
@@ -31,7 +33,16 @@ const { playAlarm } = require('../lib/alarm');
 const detectors = require('../detectors');
 const config = require('../lib/config');
 
-const VERSION = '1.0.0';
+const VERSION = (() => {
+  // Single source of truth: package.json (npm always ships it, even though
+  // files[] does not list it). Never hardcode here — a stale constant makes
+  // --version lie about which code is actually running.
+  try {
+    return require('../package.json').version || '1.0.2';
+  } catch (_) {
+    return '1.0.2';
+  }
+})();
 const KNOWN_TOOLS = ['opencode', 'claude', 'codex'];
 
 function printHelp() {
@@ -40,7 +51,7 @@ ai-agent-bell v${VERSION} — audible alarm for AI coding agents (CMD only)
 
 USAGE
   ai-agent-bell [options]                Play alarm (repeats read from config file)
-  ai-agent-bell test                     Play a short 2-round sound check
+  ai-agent-bell test                     Ring your saved count (verify a change took effect)
   ai-agent-bell config                   Show repeat-count file and current value
   ai-agent-bell config --times N         Ring N times from now on (1..30)
   ai-agent-bell setup [options]          Wire global configs (home dir ONLY, project untouched)
@@ -69,6 +80,12 @@ EXAMPLES
   ai-agent-bell --event question --times 5
   ai-agent-bell setup --times 8
   ai-agent-bell config --times 8
+  ai-agent-bell 5                        Ring 5 times (same as --times 5)
+  ai-agent-bell setup 8                  Same as setup --times 8
+
+TIP
+  A bare number means --times N, and filler words (alarm, repeats, ...)
+  are ignored, so plain attempts just work: "ai-agent-bell alarm repeats 3".
 
 ZERO PROJECT IMPACT
   setup edits only:  ~/.config/opencode/plugins/ai-agent-bell.js
@@ -99,6 +116,10 @@ function parseTimes(raw, flag) {
   return n;
 }
 
+// Filler words users naturally type ("ai-agent-bell alarm repeats 3").
+// parseArgs ignores them so the attempt just works instead of erroring.
+const FILLER_WORDS = new Set(['alarm', 'bell', 'repeat', 'repeats', 'time', 'times', 'ring', 'rings']);
+
 function parseArgs(argv) {
   const out = { event: 'complete', times: undefined, quiet: false, tools: null, cmd: 'alarm' };
   let cmdSeen = null;
@@ -109,6 +130,11 @@ function parseArgs(argv) {
       if (cmdSeen) fail(`only one command allowed (saw "${cmdSeen}" and "${a}")`);
       cmdSeen = a;
       out.cmd = a;
+    } else if (/^\d+$/.test(a)) {
+      // Friendly shortcut: a bare number means --times N, so plain attempts
+      // just work:  ai-agent-bell 5  |  setup 5  |  config 5  |  test 3
+      if (out.times !== undefined) fail('only one repeat count allowed (use --times N or a bare number, not both)');
+      out.times = parseTimes(a, 'repeat count');
     } else if (a === '--event' || a.startsWith('--event=')) {
       out.event = a.includes('=') ? a.split('=').slice(1).join('=') : takeValue(argv, i, '--event');
       if (!a.includes('=')) i++;
@@ -133,7 +159,11 @@ function parseArgs(argv) {
     } else if (a === '--quiet') out.quiet = true;
     else if (a === '-h' || a === '--help') return { ...out, cmd: 'help' };
     else if (a === '-v' || a === '--version') return { ...out, cmd: 'version' };
-    else fail(`unknown argument "${a}"`);
+    else if (FILLER_WORDS.has(a.toLowerCase())) {
+      // Ignored filler so plain-English attempts just work:
+      //   ai-agent-bell alarm repeats 3        -> ring 3 times
+      //   ai-agent-bell setup alarm repeats 3  -> setup + save 3
+    } else fail(`unknown argument "${a}"`);
   }
   if (out.cmd === 'alarm' && !detectors.byId(out.event)) {
     fail(`unknown event "${out.event}". Use: ${detectors.ALL.map((d) => d.id).join(', ')}`);
@@ -394,7 +424,14 @@ async function main() {
   if (opts.cmd === 'config') return runConfig(opts);
   if (opts.cmd === 'setup') return runSetup(opts);
   if (opts.cmd === 'test') {
-    await playAlarm({ event: 'complete', times: 2 });
+    // No explicit count -> ring the SAVED count, so `config --times N`
+    // followed by `test` proves the new value took effect. An explicit
+    // `--times N` (or bare number) still gives a custom quick check.
+    const n = opts.times ?? config.load().times;
+    if (opts.times === undefined && !opts.quiet) {
+      console.log(`[ai-agent-bell] test: playing your saved count x${n} (file: ${config.configPath()})`);
+    }
+    await playAlarm({ event: 'complete', times: n, quiet: opts.quiet });
     return;
   }
   await playAlarm({ event: opts.event, times: opts.times, quiet: opts.quiet });

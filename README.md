@@ -1,5 +1,7 @@
 # AI Agent Bell 🔔
 
+[![npm total downloads](https://img.shields.io/npm/dt/ai-agent-bell.svg)](https://www.npmjs.com/package/ai-agent-bell)
+
 **A loud bell that rings when your AI coding helper finishes work, fails, or needs you — so you can stop staring at the screen.**
 
 You give your AI a long task. You go make tea. The bell rings when it is done. That is the whole idea.
@@ -38,18 +40,25 @@ Close OpenCode / Claude Code / Codex completely, open it again, then run:
 ai-agent-bell test
 ```
 
-You should hear a short bell. Done! Now give your AI a long task and walk away — the bell will call you back.
+You should hear the bell ring your saved count (5 by default). Done! Now give your AI a long task and walk away — the bell will call you back.
 
 ## How many times should it ring?
 
-Default is **10 times**. Change it any time with one command (no setup again):
+Default is **5 times**. Change it any time with one command (no setup again):
 
 ```bash
 ai-agent-bell config --times 5    # ring 5 times from now on (allowed: 1 to 30)
 ai-agent-bell config              # show the current value
+ai-agent-bell config 5            # same as --times 5 (a bare number always means --times)
 ```
 
 That command saves the number in one small file (`~/.config/ai-agent-bell/config.json`). You can also open that file and edit the number by hand — same result.
+
+To hear your saved count and prove a change worked:
+
+```bash
+ai-agent-bell test    # rings your saved count, no setup again, no restart needed
+```
 
 For one single alarm with a different count (without changing the saved value):
 
@@ -97,6 +106,7 @@ npm rm -g ai-agent-bell
 | No sound at all | Did you restart the AI tool after `setup`? Run `ai-agent-bell test` — if the test rings, the bell works and the tool just needs a restart. |
 | Bell rings twice | Two copies are installed (for example, an old test copy). Run `ai-agent-bell setup` again — it removes its own old copies automatically. |
 | Bell rings on every little message | In Claude Code, some notifications are informational. The hook only fires for messages where **you must act** (approvals, questions). If it still feels chatty, lower the count: `ai-agent-bell config --times 3`. |
+| I changed the count but nothing changed | Run `ai-agent-bell test` — it rings your saved count straight from the file. Every hook reads that same file, so no `setup` again and no restart needed. |
 | I work on a remote machine (SSH) | Sound plays **where the AI runs** — on the remote machine, not your laptop. For remote work, use a phone/push notifier instead. |
 | My machine has no Node.js | See `adapters/no-node-fallback.md` — plain system commands that ring without this package. |
 
