@@ -89,9 +89,12 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).
-- `1.0.2` (unreleased: repo only, not on npm yet) — default repeats 10 → 5
-  (config + opencode fallback + no-node snippets + docs); `test` rings the
-  saved count unless `--times N` / bare number given (previously hardcoded 2).
+- `1.0.2` (npm + tag `v1.0.2`, GitHub `main` in sync) — default repeats
+  10 → 5 (config + opencode fallback + no-node snippets + docs); `test` rings
+  the saved count unless `--times N` / bare number given (previously
+  hardcoded 2); friendly CLI (bare number = `--times N`, filler words
+  ignored); `--version` reads package.json; `setup` warns about foreign
+  `-WindowStyle` plugins (never deletes).
 - Publish flow: `npm version patch|minor|major` → `npm publish --access public`
   (auth via granular token in npmrc; OTP not used) → `npm i -g ai-agent-bell`
   + `ai-agent-bell test` as a stranger → `git push origin main` +
