@@ -134,6 +134,14 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
   hardcoded 2); friendly CLI (bare number = `--times N`, filler words
   ignored); `--version` reads package.json; `setup` warns about foreign
   `-WindowStyle` plugins (never deletes).
+- `1.0.3` (npm + tag `v1.0.3`, GitHub `main` in sync) — fixes total opencode
+  silence ("no alarm after task complete", 2026-10-11): ESM single-export
+  plugin entries (CJS copies were dropped with "Plugin export is not a
+  function"); spawn baked node binary instead of `process.execPath`
+  (opencode binary, silent fail) with PATH + beep fallbacks; `question.asked`
+  mapped to the question alarm. Verified live on opencode 1.18.35
+  (Win32_Process showed real `node ... --event complete|question|error`
+  spawns, attached CLI exited 0, zero post-fix load errors).
 - Publish flow: `npm version patch|minor|major` → `npm publish --access public`
   → `npm i -g ai-agent-bell` + `ai-agent-bell test` as a stranger (registry
   needs ~1 min to serve the new version) → `git push origin main` +
