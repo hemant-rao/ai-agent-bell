@@ -44,8 +44,13 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 - `package.json files[]` MUST list every runtime dir (`bin lib detectors
   notifications adapters index.js`). Guarded by a smoke check (the v1
   `files[]` bug shipped nothing and would have broken all requires).
-- `npm test` = 13× `node --check` + `tests/smoke.js` (currently ~89 behavior
+- `npm test` = 13× `node --check` + `tests/smoke.js` (currently ~102 behavior
   checks). Whole suite is silent by design (CI-safe).
+- Debugging note: `npx <local-path>` (e.g. `npx F:\Project\ai-agent-bell`)
+  installs the LOCAL repo into the npm `_npx` cache as a `file:` dependency
+  (seen 2026-10-11 masquerading as 1.0.2). A mystery version in `_npx` cache
+  dirs may be such a local install, not a registry release — check the hash
+  dir's root `package.json` (`_npx.packages`) before concluding anything.
 
 ## Key behaviors (hard-won, do not regress)
 
@@ -66,7 +71,10 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
    listener (TTY only — piped hook input never disturbed).
 3. **No window changes, ever**: children spawn with `windowsHide` and NO
    `-WindowStyle Hidden` (probes proved spawn flags can't hide/minimize the
-   parent console; the flag was removed everywhere as defence-in-depth).
+   parent console; the flag was removed everywhere as defence-in-depth). Live
+   probes (2026-10-11) confirmed: foreground window unchanged through a full
+   alarm, no new visible window appears. BurntToast is NOT installed on the
+   author's machine, so the toast path is a silent no-op there.
 4. **Per-tool wiring** (setup touches HOME only, never projects):
    - OpenCode → `~/.config/opencode/plugins/ai-agent-bell.js` (self-contained
      dispatcher: baked CLI path → detached CLI; inline beep fallback).
@@ -96,9 +104,19 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
   ignored); `--version` reads package.json; `setup` warns about foreign
   `-WindowStyle` plugins (never deletes).
 - Publish flow: `npm version patch|minor|major` → `npm publish --access public`
-  (auth via granular token in npmrc; OTP not used) → `npm i -g ai-agent-bell`
-  + `ai-agent-bell test` as a stranger → `git push origin main` +
+  → `npm i -g ai-agent-bell` + `ai-agent-bell test` as a stranger (registry
+  needs ~1 min to serve the new version) → `git push origin main` +
   `git push origin vX.Y.Z` (tags do NOT ride along with plain `git push`).
+- Publish AUTH (learned 2026-10-11, do not re-learn): token lives in
+  `~/.npmrc` as `//registry.npmjs.org/:_authToken=...`. Expired token → 401
+  on `whoami`; read-only granular token → 403 on publish; granular token
+  without 2FA-bypass → 403 "2FA or bypass required" (account enforces 2FA for
+  publishing). What works: a **classic Automation token** (bypasses 2FA by
+  design). Ask the user to generate it (npmjs.com → Access Tokens).
+- Publish WARNING (benign, verified): npm 11 says `bin[...] was invalid and
+  removed` and normalizes `repository.url` on every publish. Ignore it — the
+  stranger `npm i -g` check proves the `ai-agent-bell` shims ARE created.
+  Do NOT "fix" `bin` paths because of this warning.
 - Next: announce/share; handle user issues as they arrive.
 
 ## Conventions for future work
