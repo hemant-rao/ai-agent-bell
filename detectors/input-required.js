@@ -15,7 +15,9 @@ module.exports = {
     linux: 'dialog-question.oga',
   },
   matches: {
-    opencode: ['permission.asked', 'question.asked'],
+    // NOTE: 'tool.execute.before' fires before EVERY tool run, so
+    // forToolEvent() guards it to the question tool only (see detectors/index.js).
+    opencode: ['permission.asked', 'permission.updated', 'question.asked', 'tool.execute.before'],
     claude: ['Notification'],
     codex: ['PermissionRequest'],
   },

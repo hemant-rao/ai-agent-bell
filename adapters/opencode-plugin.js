@@ -34,8 +34,63 @@ const KIND_BY_EVENT = {
   'session.idle': 'complete',
   'session.error': 'error',
   'permission.asked': 'question',
+  'permission.updated': 'question',
   'question.asked': 'question',
 };
+// NOTE: 'session.status' (busy/idle/...) and 'tool.execute.before' (every tool)
+// are resolved in the event handler with property guards — never here — so a
+// mid-task busy transition or a non-question tool can never ring.
+
+// Cooldown per (kind + session): kills double-fires from deprecated
+// 'session.idle' + modern 'session.status' arriving for the SAME completion,
+// without suppressing legit back-to-back completions of other sessions.
+// Question/error keep a short fuse: the user must act every time.
+const COOLDOWN_MS = { complete: 15000, question: 3000, error: 3000, warning: 0 };
+
+// Child (Task-tool subagent) sessions. Their idle/error events are
+// structurally identical to the main session's (upstream opencode issue:
+// session.status/session.idle carry no parentID), but the main task is still
+// running — ringing for them is exactly the "mid-task alarm" bug. Child ids
+// are learned from session.created/session.updated, which DO carry parentID.
+const CHILD_SESSIONS = new Set();
+const LAST_RING_MS = new Map();
+
+function propsOf(event) {
+  return (event && event.properties) || {};
+}
+
+function sessionIdOf(props) {
+  const info = (props && props.info) || {};
+  return props.sessionID || props.sessionId || info.sessionID || info.id || '';
+}
+
+function statusOf(props) {
+  const st = props && props.status;
+  return typeof st === 'string' ? st : (st && st.type) || '';
+}
+
+function toolNameOf(props) {
+  const t =
+    props.tool !== undefined ? props.tool : props.toolName !== undefined ? props.toolName : props.name;
+  return typeof t === 'string' ? t : (t && (t.id || t.name)) || '';
+}
+
+function noteChildSession(props) {
+  const info = (props && props.info) || {};
+  const sid = sessionIdOf(props);
+  const pid = props.parentID || props.parentId || info.parentID || info.parentId || '';
+  if (sid && pid) CHILD_SESSIONS.add(sid);
+}
+
+function cooledDown(kind, sid) {
+  const ms = COOLDOWN_MS[kind] || 0;
+  if (ms <= 0) return false;
+  const key = kind + ':' + (sid || '-');
+  const now = Date.now();
+  if (now - (LAST_RING_MS.get(key) || 0) < ms) return true;
+  LAST_RING_MS.set(key, now);
+  return false;
+}
 
 const FALLBACK_FREQ = { complete: 1000, question: 1400, error: 450, warning: 800 };
 
@@ -127,12 +182,37 @@ function alarm(kind) {
 export async function TaskAlarm() {
   return {
     event: async ({ event }) => {
-      const kind = KIND_BY_EVENT[event && event.type];
-      if (!kind) return;
       try {
+        const type = event && event.type;
+        if (!type) return;
+        const props = propsOf(event);
+        // Learn subagent ids first — never ring for these bookkeeping events.
+        if (type === 'session.created' || type === 'session.updated') {
+          noteChildSession(props);
+          return;
+        }
+        let kind = KIND_BY_EVENT[type] || null;
+        if (type === 'session.status') {
+          // Modern replacement for deprecated session.idle. Busy/retry
+          // transitions mid-task must stay silent — idle-only.
+          if (statusOf(props) !== 'idle') return;
+          kind = 'complete';
+        } else if (type === 'tool.execute.before') {
+          // Fires before every tool — only the question tool needs the user.
+          if (toolNameOf(props) !== 'question') return;
+          kind = 'question';
+        }
+        if (!kind) return;
+        const sid = sessionIdOf(props);
+        // Subagent finished/failed while the main task continues: stay silent.
+        if ((kind === 'complete' || kind === 'error') && sid && CHILD_SESSIONS.has(sid)) return;
+        // Same-session double-fire (idle + status for one completion): ring once.
+        if (cooledDown(kind, sid)) return;
         alarm(kind);
       } catch (_) {
-        fallbackBeep(kind);
+        try {
+          fallbackBeep('complete');
+        } catch (_) {}
       }
     },
   };

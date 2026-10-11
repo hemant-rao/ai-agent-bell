@@ -117,7 +117,36 @@ async function main() {
   check('opencode idle -> complete', detectors.forToolEvent('opencode', 'session.idle')?.id === 'complete');
   check('opencode error -> error', detectors.forToolEvent('opencode', 'session.error')?.id === 'error');
   check('opencode permission -> question', detectors.forToolEvent('opencode', 'permission.asked')?.id === 'question');
+  check('opencode permission.updated -> question', detectors.forToolEvent('opencode', 'permission.updated')?.id === 'question');
   check('opencode question.asked -> question', detectors.forToolEvent('opencode', 'question.asked')?.id === 'question');
+  check(
+    'opencode status idle -> complete (object shape)',
+    detectors.forToolEvent('opencode', { type: 'session.status', properties: { status: { type: 'idle' } } })?.id === 'complete'
+  );
+  check(
+    'opencode status idle -> complete (string shape)',
+    detectors.forToolEvent('opencode', { type: 'session.status', properties: { status: 'idle' } })?.id === 'complete'
+  );
+  check(
+    'opencode status busy stays silent (no mid-task complete)',
+    detectors.forToolEvent('opencode', { type: 'session.status', properties: { status: { type: 'busy' } } }) === null
+  );
+  check(
+    'opencode status without props stays silent',
+    detectors.forToolEvent('opencode', 'session.status') === null
+  );
+  check(
+    'tool.execute.before question tool -> question',
+    detectors.forToolEvent('opencode', { type: 'tool.execute.before', properties: { tool: 'question' } })?.id === 'question'
+  );
+  check(
+    'tool.execute.before question tool object -> question',
+    detectors.forToolEvent('opencode', { type: 'tool.execute.before', properties: { tool: { id: 'question' } } })?.id === 'question'
+  );
+  check(
+    'tool.execute.before other tool stays silent',
+    detectors.forToolEvent('opencode', { type: 'tool.execute.before', properties: { tool: 'read' } }) === null
+  );
   check('claude Stop -> complete', detectors.forToolEvent('claude', 'Stop')?.id === 'complete');
   check('claude Notification -> question', detectors.forToolEvent('claude', 'Notification')?.id === 'question');
   check('codex Stop -> complete', detectors.forToolEvent('codex', 'Stop')?.id === 'complete');
@@ -359,21 +388,35 @@ async function main() {
         toMjs(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'), 'baked.mjs')
       );
       const hooks = await baked.TaskAlarm({});
-      await hooks.event({ event: { type: 'session.idle' } });
-      await hooks.event({ event: { type: 'permission.asked' } });
-      await hooks.event({ event: { type: 'question.asked' } });
-      await hooks.event({ event: { type: 'session.error' } });
-      await hooks.event({ event: { type: 'whatever' } });
-      check('baked copy spawns 4x (unknown ignored)', spawns.length === 4);
+      const ev = (type, properties) => hooks.event({ event: { type, properties: properties || {} } });
+      await ev('session.created', { sessionID: 'ses_main', info: {} }); // parent itself: tracked, silent
+      await ev('session.created', { sessionID: 'ses_child', info: { parentID: 'ses_main' } }); // subagent: tracked, silent
+      await ev('session.idle', { sessionID: 'ses_main' }); // main done -> complete #1
+      await ev('session.status', { sessionID: 'ses_main2', status: { type: 'idle' } }); // modern idle -> complete #2
+      await ev('session.status', { sessionID: 'ses_main2', status: { type: 'busy' } }); // mid-task busy -> silent
+      await ev('session.idle', { sessionID: 'ses_child' }); // subagent done, main running -> silent
+      await ev('session.idle', { sessionID: 'ses_main' }); // same-session double-fire -> cooldown silent
+      await ev('permission.asked', { sessionID: 'ses_p1' }); // question #3
+      await ev('question.asked', { sessionID: 'ses_p2' }); // question #4 (other session)
+      await ev('permission.updated', { sessionID: 'ses_p3' }); // question #5
+      await ev('tool.execute.before', { sessionID: 'ses_p4', tool: 'question' }); // question #6
+      await ev('tool.execute.before', { sessionID: 'ses_p5', tool: 'read' }); // other tool -> silent
+      await ev('session.error', { sessionID: 'ses_e1' }); // error #7
+      await ev('session.error', { sessionID: 'ses_child' }); // child error -> silent
+      await ev('whatever', {});
+      check('baked copy spawns 7x (mid-task noise ignored)', spawns.length === 7);
       check(
         'spawn targets node + CLI with event kind',
         spawns[0][0] === process.execPath &&
           spawns[0][1][0].endsWith('ai-agent-bell.js') &&
           spawns[0][1].includes('--event') &&
           spawns[0][1].includes('complete') &&
-          spawns[1][1].includes('question') &&
+          spawns[1][1].includes('complete') &&
           spawns[2][1].includes('question') &&
-          spawns[3][1].includes('error')
+          spawns[3][1].includes('question') &&
+          spawns[4][1].includes('question') &&
+          spawns[5][1].includes('question') &&
+          spawns[6][1].includes('error')
       );
       check(
         'spawn detached, hidden, unref (never the opencode binary)',
@@ -408,14 +451,20 @@ async function main() {
         fs.writeFileSync(indexTmp, fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8'));
         const npmPlugin = await import(pathToFileURL(indexTmp).href);
         const hooks3 = await npmPlugin.TaskAlarm({});
-        await hooks3.event({ event: { type: 'session.idle' } });
-        await hooks3.event({ event: { type: 'permission.asked' } });
-        await hooks3.event({ event: { type: 'question.asked' } });
-        await hooks3.event({ event: { type: 'nope' } });
+        const ev3 = (type, properties) => hooks3.event({ event: { type, properties: properties || {} } });
+        await ev3('session.created', { sessionID: 'c1', info: { parentID: 'm1' } }); // subagent tracked, silent
+        await ev3('session.idle', { sessionID: 'm1' }); // complete
+        await ev3('session.idle', { sessionID: 'c1' }); // child idle mid-task -> silent
+        await ev3('session.status', { sessionID: 'm2', status: 'idle' }); // complete
+        await ev3('session.status', { sessionID: 'm2', status: 'busy' }); // mid-task busy -> silent
+        await ev3('permission.asked', { sessionID: 'q1' }); // question
+        await ev3('tool.execute.before', { sessionID: 'q2', tool: 'question' }); // question
+        await ev3('tool.execute.before', { sessionID: 'q3', tool: 'bash' }); // other tool -> silent
+        await ev3('nope', {});
         const stubCalls = execs.filter((a) => a[0] === 'playAlarm-stub').map((a) => a[1]);
         check(
-          'npm plugin maps idle+permission+question, ignores unknown',
-          JSON.stringify(stubCalls) === '["complete","question","question"]'
+          'npm plugin maps main idle/status+questions, ignores child/busy/unknown',
+          JSON.stringify(stubCalls) === '["complete","complete","question","question"]'
         );
       } finally {
         alarmLib.playAlarm = realPlay;
