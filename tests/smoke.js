@@ -267,6 +267,19 @@ async function main() {
       fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'))
     );
 
+    // Opencode: a foreign DIY plugin using -WindowStyle Hidden minimizes the
+    // user's terminal on every alarm. Setup warns but never deletes it.
+    const roguePlugin = path.join(fakeHome, '.config', 'opencode', 'plugins', 'task-alarm.js');
+    fs.writeFileSync(roguePlugin, 'powershell -NoProfile -WindowStyle Hidden -Command beep');
+    const rogue = run(['setup', '--tools', 'opencode'], { USERPROFILE: fakeHome });
+    const rogueOut = (rogue.stdout || '') + (rogue.stderr || '');
+    check(
+      'foreign -WindowStyle plugin triggers warning',
+      rogue.status === 0 && rogueOut.includes('task-alarm.js') && rogueOut.includes('-WindowStyle')
+    );
+    check('foreign file left untouched (warn-only)', fs.existsSync(roguePlugin));
+    fs.unlinkSync(roguePlugin); // keep the fake home clean for later checks
+
     // Corrupt JSON -> backup, not data loss.
     fs.writeFileSync(path.join(fakeHome, '.claude', 'settings.json'), '{broken');
     const r3 = run(['setup', '--tools', 'claude'], { USERPROFILE: fakeHome });

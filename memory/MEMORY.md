@@ -32,6 +32,15 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 ```
 
 - Legacy bin alias `ai-alarm` → same file (keeps pre-release hooks working).
+- Gotcha (seen 2026-10-11): a FOREIGN hand-made plugin
+  `~/.config/opencode/plugins/task-alarm.js` (Bun.spawn + `powershell
+  -WindowStyle Hidden`, hardcoded 10 rounds) minimized the user's CMD on every
+  alarm and double-rang beside our bell while ignoring the config file. Our
+  engine never minimizes (all children `windowsHide`, no window calls — probed).
+  Fix was rename-to-`.bak` (never delete foreign files); `setupOpencode()`
+  now warns (never deletes) about other `*.js` files containing
+  `-WindowStyle`. Disabled by renaming, restart of the AI tool required
+  (plugins load at startup).
 - `package.json files[]` MUST list every runtime dir (`bin lib detectors
   notifications adapters index.js`). Guarded by a smoke check (the v1
   `files[]` bug shipped nothing and would have broken all requires).

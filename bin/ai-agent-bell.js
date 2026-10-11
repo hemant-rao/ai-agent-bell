@@ -254,7 +254,28 @@ function setupOpencode() {
   } catch (_) {
     /* best effort */
   }
-  return `${existed ? 'updated' : 'created'} ${dest}${legacyNote}`;
+  // Foreign DIY plugins sometimes spawn `powershell -WindowStyle Hidden`
+  // without hiding their own window: that child shares YOUR console and the
+  // flag hides/minimizes it on every alarm. Warn only — never delete files
+  // we did not create.
+  let rogueNote = '';
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (f === 'ai-agent-bell.js' || !/\.js$/i.test(f)) continue;
+      if (/-WindowStyle/i.test(fs.readFileSync(path.join(dir, f), 'utf8'))) {
+        console.error(
+          `ai-agent-bell: warning: ${path.join(dir, f)} uses -WindowStyle Hidden, ` +
+            `which minimizes your terminal on every alarm. Disable or delete that file ` +
+            `(this bell already covers those events).`
+        );
+        rogueNote = ' (warning: a foreign -WindowStyle plugin is still active — see above)';
+        break;
+      }
+    }
+  } catch (_) {
+    /* best effort */
+  }
+  return `${existed ? 'updated' : 'created'} ${dest}${legacyNote}${rogueNote}`;
 }
 
 function setupClaude() {
