@@ -78,6 +78,24 @@ async function main() {
   check('DEFAULT_TIMES is 5', require('../lib/config').DEFAULT_TIMES === 5);
   const adapterSrc = fs.readFileSync(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'utf8');
   check(
+    'adapter is single-ESM-export (opencode drops CJS shaped plugins)',
+    adapterSrc.includes('export async function TaskAlarm') &&
+      !adapterSrc.includes('module.exports') &&
+      (adapterSrc.match(/^export /gm) || []).length === 1
+  );
+  check('adapter maps question.asked (agent question pauses)', adapterSrc.includes("'question.asked': 'question'"));
+  check(
+    'adapter spawns baked node, never the host binary',
+    adapterSrc.includes('cp.spawn(nodeBin()') && !adapterSrc.includes('process.execPath')
+  );
+  const indexSrc = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  check(
+    'npm entry is single-ESM-export too',
+    indexSrc.includes('export async function TaskAlarm') &&
+      !indexSrc.includes('module.exports') &&
+      (indexSrc.match(/^export /gm) || []).length === 1
+  );
+  check(
     'adapter fallback default is 5 (no stale 10)',
     adapterSrc.includes('return 5;') && !adapterSrc.includes('return 10;')
   );
@@ -99,6 +117,7 @@ async function main() {
   check('opencode idle -> complete', detectors.forToolEvent('opencode', 'session.idle')?.id === 'complete');
   check('opencode error -> error', detectors.forToolEvent('opencode', 'session.error')?.id === 'error');
   check('opencode permission -> question', detectors.forToolEvent('opencode', 'permission.asked')?.id === 'question');
+  check('opencode question.asked -> question', detectors.forToolEvent('opencode', 'question.asked')?.id === 'question');
   check('claude Stop -> complete', detectors.forToolEvent('claude', 'Stop')?.id === 'complete');
   check('claude Notification -> question', detectors.forToolEvent('claude', 'Notification')?.id === 'question');
   check('codex Stop -> complete', detectors.forToolEvent('codex', 'Stop')?.id === 'complete');
@@ -215,7 +234,8 @@ async function main() {
       'utf8'
     );
     check('opencode copy has baked CLI path', pluginCopy.includes('ai-agent-bell.js'));
-    check('no leftover placeholder', !pluginCopy.includes('__CLI_ABS_PATH__'));
+    check('opencode copy has baked node binary', pluginCopy.includes('NODE_BIN') && !pluginCopy.includes('__NODE_BIN_PATH__'));
+    check('no leftover placeholder', !pluginCopy.includes('__CLI_ABS_PATH__') && !pluginCopy.includes('__NODE_BIN_PATH__'));
     check('project dir untouched', fs.readdirSync(fakeProj).join(',') === projBefore);
 
     // Idempotency: second run adds nothing.
@@ -312,74 +332,100 @@ async function main() {
     check('rebrand idempotent (no dup groups)', rebranded2 === rebranded);
 
     // --- D. adapter dispatcher (stubbed children, silent) ---
+    // The adapter is ESM (opencode will not load CJS), so it is imported
+    // through a .mjs copy; content is byte-identical to the baked file.
+    const { pathToFileURL } = require('node:url');
+    const esmTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-esm-'));
     const spawns = [];
-    const execs = [];
+    const execs = []; // records stubbed playAlarm calls in D3
     const origSpawn = cp.spawn;
-    const origExec = cp.execFileSync;
     cp.spawn = (...a) => {
       spawns.push(a);
-      return { unref() { spawns[spawns.length - 1].unrefCalled = true; } };
-    };
-    cp.execFileSync = (...a) => {
-      execs.push(a);
-      return Buffer.from('');
+      return {
+        unref() {
+          spawns[spawns.length - 1].unrefCalled = true;
+        },
+        on() {}, // alarm() attaches an 'error' fallback handler
+      };
     };
     try {
-      // D1: setup-baked copy spawns the real CLI detached (never executed here).
-      const baked = require(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'));
+      // D1: setup-baked copy spawns node + the real CLI detached (never executed here).
+      const toMjs = (p, name) => {
+        const dest = path.join(esmTmp, name);
+        fs.writeFileSync(dest, fs.readFileSync(p, 'utf8'));
+        return pathToFileURL(dest).href;
+      };
+      const baked = await import(
+        toMjs(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'), 'baked.mjs')
+      );
       const hooks = await baked.TaskAlarm({});
       await hooks.event({ event: { type: 'session.idle' } });
       await hooks.event({ event: { type: 'permission.asked' } });
+      await hooks.event({ event: { type: 'question.asked' } });
       await hooks.event({ event: { type: 'session.error' } });
       await hooks.event({ event: { type: 'whatever' } });
-      check('baked copy spawns 3x (unknown ignored)', spawns.length === 3);
+      check('baked copy spawns 4x (unknown ignored)', spawns.length === 4);
       check(
-        'spawn targets CLI with event kind',
-        spawns[0][1][0].endsWith('ai-agent-bell.js') &&
+        'spawn targets node + CLI with event kind',
+        spawns[0][0] === process.execPath &&
+          spawns[0][1][0].endsWith('ai-agent-bell.js') &&
           spawns[0][1].includes('--event') &&
           spawns[0][1].includes('complete') &&
-          spawns[2][1].includes('error')
+          spawns[1][1].includes('question') &&
+          spawns[2][1].includes('question') &&
+          spawns[3][1].includes('error')
       );
-      check('spawn detached + unref', spawns.every((s) => s[2] && s[2].detached && s[0] === process.execPath));
+      check(
+        'spawn detached, hidden, unref (never the opencode binary)',
+        spawns.every((s) => s[2] && s[2].detached && s[2].windowsHide && !String(s[0]).includes('opencode'))
+      );
       check('spawn path unref called', spawns.every((s) => s.unrefCalled));
 
       // D2: unbaked copy (hand-copied file) falls back to inline beeps, silent here.
       spawns.length = 0;
-      execs.length = 0;
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-adapter-'));
-      const srcAdapter = fs.readFileSync(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'utf8');
-      const plainDest = path.join(tmpDir, 'plain-copy.js');
-      fs.writeFileSync(plainDest, srcAdapter); // placeholder intact -> cliAvailable false
-      const plain = require(plainDest);
+      const plain = await import(toMjs(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'plain.mjs'));
       const hooks2 = await plain.TaskAlarm({});
       await hooks2.event({ event: { type: 'session.idle' } });
-      check('fallback used when CLI missing (no spawn)', spawns.length === 0 && execs.length === 1);
-      check('fallback beeps complete freq', execs[0][0] === 'powershell' && execs[0][1].join(' ').includes('1000'));
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      check(
+        'fallback used when CLI missing (powershell spawn, no CLI)',
+        spawns.length === 1 && spawns[0][0] === 'powershell' && !spawns[0][1].join(' ').includes('ai-agent-bell.js')
+      );
+      check('fallback beeps complete freq', spawns[0][1].join(' ').includes('1000'));
 
-      // D3: npm-mode plugin resolves via detectors registry (stubbed spawn path).
-      // index.js plays in-process, so here we only verify mapping without sound:
-      // swap playAlarm out by requiring index with a stubbed lib/alarm.
-      const alarmPath = require.resolve('../lib/alarm');
-      const realAlarm = require(alarmPath);
-      require.cache[alarmPath].exports = {
-        playAlarm: async (opts) => {
-          execs.push(['playAlarm-stub', opts.event]);
-          return { event: opts.event, times: 0, stoppedEarly: false };
-        },
+      // D3: npm-mode entry resolves via detectors registry (stubbed playAlarm, no sound).
+      // index.js is ESM with a relative import, so it is copied to a .mjs file
+      // at the repo root (same dir -> relatives resolve) and removed afterwards.
+      // The lib/alarm stub is installed BEFORE import; index.js looks the call
+      // up at event time, so the stub is honoured.
+      const alarmLib = require('../lib/alarm');
+      const realPlay = alarmLib.playAlarm;
+      alarmLib.playAlarm = async (opts) => {
+        execs.push(['playAlarm-stub', opts.event]);
+        return { event: opts.event, times: 0, stoppedEarly: false };
       };
-      delete require.cache[require.resolve('../index.js')];
-      const npmPlugin = require('../index.js');
-      const hooks3 = await npmPlugin.TaskAlarm({});
-      await hooks3.event({ event: { type: 'session.idle' } });
-      await hooks3.event({ event: { type: 'permission.asked' } });
-      await hooks3.event({ event: { type: 'nope' } });
-      const stubCalls = execs.filter((a) => a[0] === 'playAlarm-stub').map((a) => a[1]);
-      check('npm plugin maps idle+permission, ignores unknown', JSON.stringify(stubCalls) === '["complete","question"]');
-      require.cache[alarmPath].exports = realAlarm;
+      const indexTmp = path.join(ROOT, '.smoke-index-check.mjs');
+      try {
+        fs.writeFileSync(indexTmp, fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8'));
+        const npmPlugin = await import(pathToFileURL(indexTmp).href);
+        const hooks3 = await npmPlugin.TaskAlarm({});
+        await hooks3.event({ event: { type: 'session.idle' } });
+        await hooks3.event({ event: { type: 'permission.asked' } });
+        await hooks3.event({ event: { type: 'question.asked' } });
+        await hooks3.event({ event: { type: 'nope' } });
+        const stubCalls = execs.filter((a) => a[0] === 'playAlarm-stub').map((a) => a[1]);
+        check(
+          'npm plugin maps idle+permission+question, ignores unknown',
+          JSON.stringify(stubCalls) === '["complete","question","question"]'
+        );
+      } finally {
+        alarmLib.playAlarm = realPlay;
+        try {
+          fs.unlinkSync(indexTmp);
+        } catch (_) {}
+      }
     } finally {
       cp.spawn = origSpawn;
-      cp.execFileSync = origExec;
+      fs.rmSync(esmTmp, { recursive: true, force: true });
     }
   } finally {
     fs.rmSync(fakeHome, { recursive: true, force: true });

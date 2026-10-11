@@ -15,7 +15,7 @@ module.exports = {
     linux: 'dialog-question.oga',
   },
   matches: {
-    opencode: ['permission.asked'],
+    opencode: ['permission.asked', 'question.asked'],
     claude: ['Notification'],
     codex: ['PermissionRequest'],
   },

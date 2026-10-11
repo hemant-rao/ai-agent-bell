@@ -44,8 +44,39 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 - `package.json files[]` MUST list every runtime dir (`bin lib detectors
   notifications adapters index.js`). Guarded by a smoke check (the v1
   `files[]` bug shipped nothing and would have broken all requires).
-- `npm test` = 13× `node --check` + `tests/smoke.js` (currently ~102 behavior
-  checks). Whole suite is silent by design (CI-safe).
+- `npm test` = CJS `node --check` + ESM `node --input-type=module --check < file`
+  (stdin redirect works in cmd and sh) + `tests/smoke.js` (currently ~110 behavior
+  checks). Whole suite is silent by design (CI-safe). ESM files (index.js,
+  adapters/opencode-plugin.js) are additionally imported by the smoke test
+  through `.mjs` copies (their `.js` names must stay: opencode loads that path).
+- Gotcha (seen 2026-10-11, the "no alarm after task complete" incident):
+  THREE bugs conspired, all in the opencode path (Claude/Codex hooks use
+  `npx`, unaffected):
+  1. The installed plugin was CJS (`module.exports = { TaskAlarm }`). opencode
+     calls EVERY export as a factory and drops the whole file on any
+     non-function export — log: `failed to load plugin ... "Plugin export is
+     not a function"`. The foreign DIY `task-alarm.js` (ESM) loaded fine next
+     to it, which is why its bell was heard while ours never ran. FIX: both
+     plugin entries (adapters/opencode-plugin.js, index.js) are ESM with
+     exactly ONE export (`export async function TaskAlarm`, no other exports).
+     Probed live: CJS `module.exports = fn` ALSO fails; ESM loads.
+  2. The plugin spawned `process.execPath` — inside opencode that is the
+     opencode binary, which just prints its own help and exits 1 (silent:
+     detached + stdio ignored). FIX: setup bakes setup's own node binary
+     (`__NODE_BIN_PATH__`, falls back to PATH `node`); spawn errors fall back
+     to inline beeps via an 'error' handler (spawn failures are async events,
+     try/catch alone misses them).
+  3. `question.asked` (the common "agent paused for an answer" event) was
+     unmapped, so questions rang nothing. FIX: mapped to `question` in the
+     adapter table and detectors/input-required.js (index.js follows the
+     registry automatically).
+  Verified live on opencode 1.18.35: headless run showed the real plugin
+  spawning `node ... ai-agent-bell.js --event complete|question|error`
+  (Win32_Process), attached CLI run exited 0 in 4.7s, zero post-fix load
+  errors in opencode.log.
+- The installed `~/.config/opencode/plugins/ai-agent-bell.js` is a COPY —
+  updating the npm package never refreshes it. Users must re-run
+  `ai-agent-bell setup` after every update (README troubleshooting says so).
 - Debugging note: `npx <local-path>` (e.g. `npx F:\Project\ai-agent-bell`)
   installs the LOCAL repo into the npm `_npx` cache as a `file:` dependency
   (seen 2026-10-11 masquerading as 1.0.2). A mystery version in `_npx` cache

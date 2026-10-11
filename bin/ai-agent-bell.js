@@ -237,10 +237,14 @@ function setupOpencode() {
   const dest = path.join(dir, 'ai-agent-bell.js');
   const cliAbs = path.join(__dirname, 'ai-agent-bell.js');
   let body = fs.readFileSync(src, 'utf8');
-  // Replace the whole quoted token so the baked file holds a valid JS string.
-  // An unbaked (hand-copied) file keeps the harmless placeholder string and
-  // the plugin falls back to inline beeps.
+  // Replace the whole quoted tokens so the baked file holds valid JS strings.
+  // CLI_JS locates the engine; NODE_BIN is setup's own node binary — the
+  // plugin must never spawn process.execPath (inside opencode that is the
+  // opencode binary, which cannot run JS and fails silently). An unbaked
+  // (hand-copied) file keeps the harmless placeholders and the plugin falls
+  // back to inline beeps / PATH node.
   body = body.split(`'__CLI_ABS_PATH__'`).join(JSON.stringify(cliAbs));
+  body = body.split(`'__NODE_BIN_PATH__'`).join(JSON.stringify(process.execPath));
   const existed = fs.existsSync(dest);
   fs.writeFileSync(dest, body);
   // Remove our own pre-release copy so two plugins never ring twice.

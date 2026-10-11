@@ -43,6 +43,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --check bin/ai-agent-bell.js && node --check lib/alarm.js && node --check lib/config.js && node --check index.js && node --check detectors/index.js && node --check detectors/completion.js && node --check detectors/input-required.js && node --check detectors/error.js && node --check detectors/warning.js && node --check notifications/sound.js && node --check notifications/desktop.js && node --check notifications/terminal.js && node --check adapters/opencode-plugin.js && node tests/smoke.js"
+    "test": "node --check bin/ai-agent-bell.js && node --check lib/alarm.js && node --check lib/config.js && node --input-type=module --check < index.js && node --check detectors/index.js && node --check detectors/completion.js && node --check detectors/input-required.js && node --check detectors/error.js && node --check detectors/warning.js && node --check notifications/sound.js && node --check notifications/desktop.js && node --check notifications/terminal.js && node --input-type=module --check < adapters/opencode-plugin.js && node tests/smoke.js"
   }
 }

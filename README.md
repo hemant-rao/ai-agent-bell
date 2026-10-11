@@ -104,6 +104,7 @@ npm rm -g ai-agent-bell
 | Problem | Fix |
 |---|---|
 | No sound at all | Did you restart the AI tool after `setup`? Run `ai-agent-bell test` — if the test rings, the bell works and the tool just needs a restart. |
+| Updated the package but still silent | Run `ai-agent-bell setup` again — `setup` copies the plugin file fresh (old copies never update themselves). Then restart the AI tool. |
 | Bell rings twice, or the window minimizes | Another alarm plugin is also active (for example, a hand-made `task-alarm.js`). Run `ai-agent-bell setup` — it removes its own old copies and warns about foreign files using `-WindowStyle Hidden` (that flag minimizes your terminal). Disable or delete the named file, then restart the AI tool. |
 | Bell rings on every little message | In Claude Code, some notifications are informational. The hook only fires for messages where **you must act** (approvals, questions). If it still feels chatty, lower the count: `ai-agent-bell config --times 3`. |
 | I changed the count but nothing changed | Run `ai-agent-bell test` — it rings your saved count straight from the file. Every hook reads that same file, so no `setup` again and no restart needed. |

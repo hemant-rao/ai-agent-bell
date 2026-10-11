@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * ai-agent-bell — npm plugin entry for opencode.
  *
@@ -10,19 +8,23 @@
  * Fire-and-forget, plugin-safe: quiet (the TUI already shows state) and
  * keyStop:false (never steals keys from the opencode TUI).
  * Sound-only side effect. No project files touched, nothing added to builds.
+ *
+ * Module shape matters: opencode calls EVERY export as a plugin factory and
+ * drops the whole file when any export is not a function. So this file has
+ * exactly ONE export (TaskAlarm, ESM) and must never use CJS-style exports.
  */
 
-const detectors = require('./detectors');
-const { playAlarm } = require('./lib/alarm');
+// NOTE: default imports (not destructured) so the bindings always resolve
+// through the CJS module objects at call time.
+import detectors from './detectors/index.js';
+import alarmLib from './lib/alarm.js';
 
-async function TaskAlarm() {
+export async function TaskAlarm() {
   return {
     event: async ({ event }) => {
       const det = detectors.forToolEvent('opencode', event && event.type);
       if (!det) return;
-      playAlarm({ event: det.id, quiet: true, keyStop: false }).catch(() => {});
+      alarmLib.playAlarm({ event: det.id, quiet: true, keyStop: false }).catch(() => {});
     },
   };
 }
-
-module.exports = { TaskAlarm };
