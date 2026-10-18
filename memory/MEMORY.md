@@ -28,7 +28,9 @@ notifications/           HOW it tells you: sound.js (engine), desktop.js (toast)
 lib/                     config.js (repeat-count file) + alarm.js (orchestrator)
 adapters/                copy-paste pieces per tool (opencode-plugin.js, claude/codex snippets, no-node-fallback.md)
 tests/smoke.js           silent suite (never plays sound; stubs children; fake HOME)
-index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyStop:false)
+tools/verify-opencode.js live host check: real opencode must load the plugin (throwaway HOME)
+.github/workflows/       ci.yml (silent suite on push) + opencode-canary.yml (weekly, latest opencode)
+index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyStop:false)
 ```
 
 - Legacy bin alias `ai-alarm` → same file (keeps pre-release hooks working).
@@ -42,13 +44,14 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
   `-WindowStyle`. Disabled by renaming, restart of the AI tool required
   (plugins load at startup).
 - `package.json files[]` MUST list every runtime dir (`bin lib detectors
-  notifications adapters index.js`). Guarded by a smoke check (the v1
+  notifications adapters index.mjs`). Guarded by a smoke check (the v1
   `files[]` bug shipped nothing and would have broken all requires).
-- `npm test` = CJS `node --check` + ESM `node --input-type=module --check < file`
-  (stdin redirect works in cmd and sh) + `tests/smoke.js` (currently ~110 behavior
-  checks). Whole suite is silent by design (CI-safe). ESM files (index.js,
-  adapters/opencode-plugin.js) are additionally imported by the smoke test
-  through `.mjs` copies (their `.js` names must stay: opencode loads that path).
+- `npm test` = CJS `node --check` + `node --check index.mjs` (ESM by
+  extension) + `node --input-type=module --check < adapters/opencode-plugin.js`
+  (stdin redirect works in cmd and sh) + `tests/smoke.js` (currently ~115
+  behavior checks). Whole suite is silent by design (CI-safe). The adapter is
+  additionally imported by the smoke test through a `.mjs` copy (its `.js`
+  name must stay: setup copies that exact filename into opencode's plugin dir).
 - Gotcha (seen 2026-10-11, the "no alarm after task complete" incident):
   THREE bugs conspired, all in the opencode path (Claude/Codex hooks use
   `npx`, unaffected):
@@ -74,6 +77,51 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
   spawning `node ... ai-agent-bell.js --event complete|question|error`
   (Win32_Process), attached CLI run exited 0 in 4.7s, zero post-fix load
   errors in opencode.log.
+- Gotcha (seen 2026-10-18, opencode 2.x): opencode 2.0.32 loads plugin files
+  in a NEW shape. The server reads the module's DEFAULT export and requires a
+  definition with `id` plus `effect` or `setup` — the V1 named export
+  (`export async function TaskAlarm`) now drops the file with "Plugin must
+  export a default definition with an id and an effect or setup function."
+  (TUI: "[Server plugin error]"). FIX: both entries default-export
+  `{ id: 'ai-agent-bell', setup(ctx) {...} }` subscribing via
+  `ctx.event.subscribe({ signal })`; the extra `server()` method keeps
+  opencode 1.18.29+ working (its object entrypoint), and `setup` returns a
+  cleanup that aborts the subscription. V2 event payloads sit on `event.data`
+  (1.x used `event.properties`) — propsOf/`forToolEvent` accept both.
+  `question.asked` is gone in 2.x: questions are `form.created` (payload
+  `{ form: { id, sessionID } }`, mapped to question); `permission.asked`
+  stays; `session.status idle` + `session.idle` semantics unchanged. The
+  subscribe loop resubscribes every 2s after a hiccup so the bell can never
+  die silently. npm entry renamed index.js → index.mjs (ESM under a
+  `"type": "commonjs"` package must not masquerade as CJS again). Verified
+  live on opencode 2.0.32: `/api/plugin` lists `ai-agent-bell`
+  state=active, no post-fix load errors in opencode.log (fixed plugin was
+  re-installed with the repo's own `setup --tools opencode`, which baked the
+  REPO CLI path — after publishing, run the installed `setup` again).
+- Release safety (added 2026-10-18, so a host-API break like the one above can
+  never ship silently again): `npm run verify:opencode`
+  (tools/verify-opencode.js) is a LIVE check — throwaway HOME (USERPROFILE +
+  HOME override) plus a private `opencode serve --hostname 127.0.0.1 --port
+  <free>` per phase (NOT the shared background service: `opencode api` alone
+  tries to start a service on the user's real port and collides, and
+  `api --standalone` answers /api/plugin from an EMPTY registry). serve prints
+  `server password <pw>`; requests use `Authorization: Basic
+  base64("opencode:<pw>")`; the plugin registry fills in ASYNCHRONOUSLY (poll
+  until non-empty, ~5-8 s). Two phases, because the loader rejects duplicate
+  plugin IDs: (A) setup file-copy active, (B) file copy removed + packed
+  plugin loaded via the `plugins` config entry — both must report state=active
+  and opencode.log must show no "failed to load plugin"/duplicate-ID rows;
+  exit 1 otherwise. It runs `npm pack` + a scratch `npm install` + a Node
+  import shape check, so it also catches files[]/exports/main resolution
+  breaks; it never plays sound and never touches the real HOME (private
+  servers are tree-killed in cleanup; Windows needs a 1.5s wait before rm).
+  `prepublishOnly` runs `npm test` on every publish. `tests/smoke.js`
+  validates the packed tarball (`npm pack --dry-run --json`).
+  `.github/workflows/ci.yml` runs the suite on every push/PR (node 18-24,
+  ubuntu + windows); `opencode-canary.yml` runs verify:opencode weekly against
+  the LATEST opencode — plugin-API drift turns the canary red before users
+  hit it. `package.json` gained an `exports` map (kept `main` for old
+  resolvers).
 - The installed `~/.config/opencode/plugins/ai-agent-bell.js` is a COPY —
   updating the npm package never refreshes it. Users must re-run
   `ai-agent-bell setup` after every update (README troubleshooting says so).
@@ -108,7 +156,9 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
    author's machine, so the toast path is a silent no-op there.
 4. **Per-tool wiring** (setup touches HOME only, never projects):
    - OpenCode → `~/.config/opencode/plugins/ai-agent-bell.js` (self-contained
-     dispatcher: baked CLI path → detached CLI; inline beep fallback).
+     dispatcher: baked CLI path → detached CLI; inline beep fallback). 2.x
+     loads the default `{id, setup}` definition and subscribes via
+     `ctx.event.subscribe`; 1.18.29+ uses the `server()` entrypoint.
      Legacy `ai-task-alarm.js` copy is auto-removed to avoid double ringing.
    - Claude → global `~/.claude/settings.json`: `Stop`→complete,
      `StopFailure`→error, `Notification`→question with matcher restricted to
@@ -125,6 +175,18 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
 
 ## Release state
 
+- `1.0.5` (2026-10-18) — opencode 2.x support (see gotcha above): V2 default
+  definition + event-subscribe port, `form.created` → question, `.data`
+  payloads, `index.js` → `index.mjs`. Packaging guardrails added same day:
+  `exports` map (main kept for old resolvers), `prepublishOnly: npm test`,
+  tarball-content check in smoke (`npm pack --dry-run --json`: runtime files
+  present, tests/tools/memory/.github excluded), `npm run verify:opencode`
+  live host check (tools/verify-opencode.js), GitHub Actions `ci.yml` + weekly
+  `opencode-canary.yml`. npm publish + tag `v1.0.5` pending at time of
+  writing. Machine state: global npm install is still 1.0.4 (index.js, no
+  exports) and the installed opencode plugin copy is baked to the REPO CLI —
+  after publishing run `npm i -g ai-agent-bell` + `ai-agent-bell setup` again
+  to re-bake to the npm install.
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).
@@ -142,9 +204,12 @@ index.js                 opencode npm-plugin entry (fire-and-forget, quiet, keyS
   mapped to the question alarm. Verified live on opencode 1.18.35
   (Win32_Process showed real `node ... --event complete|question|error`
   spawns, attached CLI exited 0, zero post-fix load errors).
-- Publish flow: `npm version patch|minor|major` → `npm publish --access public`
-  → `npm i -g ai-agent-bell` + `ai-agent-bell test` as a stranger (registry
-  needs ~1 min to serve the new version) → `git push origin main` +
+- Publish flow (1.0.5+): `npm run verify:opencode` first if the installed
+  opencode changed since the last release; `npm publish` runs `npm test`
+  automatically via `prepublishOnly`. Then `npm version patch|minor|major` →
+  `npm publish --access public` → `npm i -g ai-agent-bell` + `ai-agent-bell
+  setup` (re-bake) + `ai-agent-bell test` as a stranger (registry needs
+  ~1 min to serve the new version) → `git push origin main` +
   `git push origin vX.Y.Z` (tags do NOT ride along with plain `git push`).
 - Publish AUTH (learned 2026-10-11, do not re-learn): token lives in
   `~/.npmrc` as `//registry.npmjs.org/:_authToken=...`. Expired token → 401

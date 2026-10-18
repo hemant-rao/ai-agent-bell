@@ -78,23 +78,39 @@ async function main() {
   check('DEFAULT_TIMES is 5', require('../lib/config').DEFAULT_TIMES === 5);
   const adapterSrc = fs.readFileSync(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'utf8');
   check(
-    'adapter is single-ESM-export (opencode drops CJS shaped plugins)',
-    adapterSrc.includes('export async function TaskAlarm') &&
+    'adapter is a V2 default definition (id + setup), no CJS exports',
+    adapterSrc.includes('export default {') &&
+      adapterSrc.includes("id: 'ai-agent-bell'") &&
+      adapterSrc.includes('setup(ctx)') &&
       !adapterSrc.includes('module.exports') &&
       (adapterSrc.match(/^export /gm) || []).length === 1
   );
+  check(
+    'adapter keeps a V1 server() entrypoint (opencode 1.18.29+)',
+    adapterSrc.includes('async server()') && adapterSrc.includes('handleEvent')
+  );
+  check(
+    'adapter subscribes to the 2.x event stream',
+    adapterSrc.includes('ctx.event.subscribe({ signal: controller.signal })')
+  );
+  check('adapter reads 2.x .data and legacy .properties', adapterSrc.includes('event.data || event.properties'));
   check('adapter maps question.asked (agent question pauses)', adapterSrc.includes("'question.asked': 'question'"));
+  check('adapter maps form.created (2.x question form)', adapterSrc.includes("'form.created': 'question'"));
   check(
     'adapter spawns baked node, never the host binary',
     adapterSrc.includes('cp.spawn(nodeBin()') && !adapterSrc.includes('process.execPath')
   );
-  const indexSrc = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  const indexSrc = fs.readFileSync(path.join(ROOT, 'index.mjs'), 'utf8');
   check(
-    'npm entry is single-ESM-export too',
-    indexSrc.includes('export async function TaskAlarm') &&
+    'npm entry is a V2 default definition too (.mjs keeps ESM unambiguous)',
+    indexSrc.includes('export default {') &&
+      indexSrc.includes("id: 'ai-agent-bell'") &&
+      indexSrc.includes('setup(ctx)') &&
       !indexSrc.includes('module.exports') &&
       (indexSrc.match(/^export /gm) || []).length === 1
   );
+  check('npm entry keeps a V1 server() entrypoint', indexSrc.includes('async server()'));
+  check('npm entry reads 2.x .data and legacy .properties', indexSrc.includes('event.data || event.properties'));
   check(
     'adapter fallback default is 5 (no stale 10)',
     adapterSrc.includes('return 5;') && !adapterSrc.includes('return 10;')
@@ -119,6 +135,14 @@ async function main() {
   check('opencode permission -> question', detectors.forToolEvent('opencode', 'permission.asked')?.id === 'question');
   check('opencode permission.updated -> question', detectors.forToolEvent('opencode', 'permission.updated')?.id === 'question');
   check('opencode question.asked -> question', detectors.forToolEvent('opencode', 'question.asked')?.id === 'question');
+  check(
+    'opencode form.created -> question (2.x question form)',
+    detectors.forToolEvent('opencode', { type: 'form.created', data: { form: { sessionID: 's' } } })?.id === 'question'
+  );
+  check(
+    '2.x .data payload drives session.status idle -> complete',
+    detectors.forToolEvent('opencode', { type: 'session.status', data: { status: { type: 'idle' } } })?.id === 'complete'
+  );
   check(
     'opencode status idle -> complete (object shape)',
     detectors.forToolEvent('opencode', { type: 'session.status', properties: { status: { type: 'idle' } } })?.id === 'complete'
@@ -197,13 +221,75 @@ async function main() {
   plainStdin.emit('data', Buffer.from('x'));
   check('non-TTY stdin ignored', st2.stop === false);
 
-  // Packaging: every runtime require must ship on npm.
-  const pkgFiles = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).files;
+  // Packaging: every runtime require must ship on npm, and the tarball npm
+  // would actually publish must match. `files[]` can rot silently (the
+  // index.js -> index.mjs rename once left main pointing at nothing), so the
+  // pack dry-run is checked too — it is the only honest list of what users get.
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const pkgFiles = pkg.files;
   check('files[] ships detectors/', pkgFiles.includes('detectors/'));
   check('files[] ships notifications/', pkgFiles.includes('notifications/'));
   check('files[] ships lib/', pkgFiles.includes('lib/'));
   check('files[] ships bin/', pkgFiles.includes('bin/'));
   check('files[] ships adapters/', pkgFiles.includes('adapters/'));
+  check('files[] ships index.mjs', pkgFiles.includes('index.mjs'));
+  check(
+    'exports map and main both point at index.mjs',
+    !!pkg.exports && pkg.exports['.'] === './index.mjs' && pkg.main === 'index.mjs'
+  );
+  check('prepublishOnly runs the test suite before any publish', pkg.scripts.prepublishOnly === 'npm test');
+  check(
+    'verify:opencode script wires the live host check',
+    pkg.scripts['verify:opencode'] === 'node tools/verify-opencode.js'
+  );
+  // DEP0190-safe: Windows gets one command string through the shell, POSIX a
+  // plain argv call (no args array + shell:true anywhere).
+  const packRun =
+    process.platform === 'win32'
+      ? spawnSync('npm pack --dry-run --json', {
+          cwd: ROOT,
+          encoding: 'utf8',
+          shell: true,
+          windowsHide: true,
+          timeout: 60000,
+        })
+      : spawnSync('npm', ['pack', '--dry-run', '--json'], {
+          cwd: ROOT,
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 60000,
+        });
+  let packFiles = [];
+  try {
+    const out = String(packRun.stdout || '');
+    packFiles = (JSON.parse(out.slice(out.indexOf('[')))[0].files || []).map((f) => f.path);
+  } catch (_) {}
+  const mustShip = [
+    'package.json',
+    'README.md',
+    'LICENSE',
+    'index.mjs',
+    'bin/ai-agent-bell.js',
+    'lib/alarm.js',
+    'lib/config.js',
+    'detectors/index.js',
+    'detectors/completion.js',
+    'detectors/input-required.js',
+    'detectors/error.js',
+    'detectors/warning.js',
+    'notifications/sound.js',
+    'notifications/desktop.js',
+    'notifications/terminal.js',
+    'adapters/opencode-plugin.js',
+  ];
+  check('npm pack --dry-run lists the tarball contents', packFiles.length > 0);
+  const missingFromTarball = mustShip.filter((f) => !packFiles.includes(f));
+  if (missingFromTarball.length) console.log('     missing from tarball: ' + missingFromTarball.join(', '));
+  check('tarball ships every runtime file', missingFromTarball.length === 0);
+  check(
+    'tarball excludes dev-only paths (tests/ tools/ memory/ .github/)',
+    !packFiles.some((f) => /^(tests|tools|memory|\.github)\//.test(f))
+  );
 
   // --- C. config save/load roundtrip in fake HOME (silent) ---
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-smoke-'));
@@ -265,6 +351,12 @@ async function main() {
     check('opencode copy has baked CLI path', pluginCopy.includes('ai-agent-bell.js'));
     check('opencode copy has baked node binary', pluginCopy.includes('NODE_BIN') && !pluginCopy.includes('__NODE_BIN_PATH__'));
     check('no leftover placeholder', !pluginCopy.includes('__CLI_ABS_PATH__') && !pluginCopy.includes('__NODE_BIN_PATH__'));
+    check(
+      'opencode copy is V2-shaped (default definition, id + setup)',
+      pluginCopy.includes('export default {') &&
+        pluginCopy.includes("id: 'ai-agent-bell'") &&
+        pluginCopy.includes('setup(ctx)')
+    );
     check('project dir untouched', fs.readdirSync(fakeProj).join(',') === projBefore);
 
     // Idempotency: second run adds nothing.
@@ -361,8 +453,11 @@ async function main() {
     check('rebrand idempotent (no dup groups)', rebranded2 === rebranded);
 
     // --- D. adapter dispatcher (stubbed children, silent) ---
-    // The adapter is ESM (opencode will not load CJS), so it is imported
+    // The adapter is ESM (opencode loads it as a module), so it is imported
     // through a .mjs copy; content is byte-identical to the baked file.
+    // The 2.x server calls the default export's setup(ctx) and streams events
+    // through ctx.event.subscribe({ signal }); the extra server() method
+    // covers opencode 1.18.29+ object entrypoints.
     const { pathToFileURL } = require('node:url');
     const esmTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-esm-'));
     const spawns = [];
@@ -377,8 +472,40 @@ async function main() {
         on() {}, // alarm() attaches an 'error' fallback handler
       };
     };
+    // Fake 2.x plugin context: one scripted event stream, then silence until
+    // the plugin unloads — exactly how the live stream behaves between bursts.
+    const makeCtx = (events) => ({
+      event: {
+        subscribe: ({ signal }) => ({
+          [Symbol.asyncIterator]: () => {
+            let i = 0;
+            return {
+              next: () =>
+                i < events.length
+                  ? Promise.resolve({ value: events[i++], done: false })
+                  : new Promise((resolve) => {
+                      if (signal.aborted) return resolve({ value: undefined, done: true });
+                      signal.addEventListener('abort', () => resolve({ value: undefined, done: true }), {
+                        once: true,
+                      });
+                    }),
+              return: () => Promise.resolve({ value: undefined, done: true }),
+            };
+          },
+        }),
+      },
+    });
+    const waitFor = async (fn, ms = 3000) => {
+      const t0 = Date.now();
+      while (!fn()) {
+        if (Date.now() - t0 > ms) return false;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return true;
+    };
     try {
-      // D1: setup-baked copy spawns node + the real CLI detached (never executed here).
+      // D1: setup-baked copy — 2.x shape, payloads on .data, plus legacy
+      // .properties events still honored for 1.x parity. Spawns stub out.
       const toMjs = (p, name) => {
         const dest = path.join(esmTmp, name);
         fs.writeFileSync(dest, fs.readFileSync(p, 'utf8'));
@@ -387,27 +514,38 @@ async function main() {
       const baked = await import(
         toMjs(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'), 'baked.mjs')
       );
-      const hooks = await baked.TaskAlarm({});
-      const ev = (type, properties) => hooks.event({ event: { type, properties: properties || {} } });
-      await ev('session.created', { sessionID: 'ses_main', info: {} }); // parent itself: tracked, silent
-      await ev('session.created', { sessionID: 'ses_child', info: { parentID: 'ses_main' } }); // subagent: tracked, silent
-      await ev('session.idle', { sessionID: 'ses_main' }); // main done -> complete #1
-      await ev('session.status', { sessionID: 'ses_main2', status: { type: 'idle' } }); // modern idle -> complete #2
-      await ev('session.status', { sessionID: 'ses_main2', status: { type: 'busy' } }); // mid-task busy -> silent
-      await ev('session.idle', { sessionID: 'ses_child' }); // subagent done, main running -> silent
-      await ev('session.idle', { sessionID: 'ses_main' }); // same-session double-fire -> cooldown silent
-      await ev('permission.asked', { sessionID: 'ses_p1' }); // question #3
-      await ev('question.asked', { sessionID: 'ses_p2' }); // question #4 (other session)
-      await ev('permission.updated', { sessionID: 'ses_p3' }); // question #5
-      await ev('tool.execute.before', { sessionID: 'ses_p4', tool: 'question' }); // question #6
-      await ev('tool.execute.before', { sessionID: 'ses_p5', tool: 'read' }); // other tool -> silent
-      await ev('session.error', { sessionID: 'ses_e1' }); // error #7
-      await ev('session.error', { sessionID: 'ses_child' }); // child error -> silent
-      await ev('whatever', {});
-      check('baked copy spawns 7x (mid-task noise ignored)', spawns.length === 7);
+      check(
+        'baked copy default export is a definition (id + setup + server)',
+        baked.default.id === 'ai-agent-bell' &&
+          typeof baked.default.setup === 'function' &&
+          typeof baked.default.server === 'function'
+      );
+      const stop = baked.default.setup(
+        makeCtx([
+          { type: 'session.created', data: { sessionID: 'ses_main', info: {} } }, // parent itself: tracked, silent
+          { type: 'session.created', data: { sessionID: 'ses_child', parentID: 'ses_main' } }, // subagent: tracked, silent
+          { type: 'session.idle', data: { sessionID: 'ses_main' } }, // main done -> complete #1
+          { type: 'session.status', data: { sessionID: 'ses_main2', status: { type: 'idle' } } }, // modern idle -> complete #2
+          { type: 'session.status', data: { sessionID: 'ses_main2', status: { type: 'busy' } } }, // mid-task busy -> silent
+          { type: 'session.idle', data: { sessionID: 'ses_child' } }, // subagent done, main running -> silent
+          { type: 'session.idle', data: { sessionID: 'ses_main' } }, // same-session double-fire -> cooldown silent
+          { type: 'permission.asked', data: { sessionID: 'ses_p1' } }, // question #3
+          { type: 'question.asked', properties: { sessionID: 'ses_p2' } }, // legacy 1.x payload -> question #4
+          { type: 'permission.updated', properties: { sessionID: 'ses_p3' } }, // legacy 1.x payload -> question #5
+          { type: 'form.created', data: { form: { id: 'f1', sessionID: 'ses_p4' } } }, // 2.x question form -> #6
+          { type: 'tool.execute.before', properties: { sessionID: 'ses_p5', tool: 'question' } }, // legacy -> #7
+          { type: 'tool.execute.before', properties: { sessionID: 'ses_p6', tool: 'read' } }, // other tool -> silent
+          { type: 'session.error', data: { sessionID: 'ses_e1' } }, // error #8
+          { type: 'session.error', data: { sessionID: 'ses_child' } }, // child error -> silent
+          { type: 'whatever', data: {} },
+        ])
+      );
+      check('baked copy spawns 8x (mid-task noise ignored)', await waitFor(() => spawns.length === 8));
+      check('setup returns an abort-style cleanup', typeof stop === 'function');
       check(
         'spawn targets node + CLI with event kind',
-        spawns[0][0] === process.execPath &&
+        spawns.length === 8 &&
+          spawns[0][0] === process.execPath &&
           spawns[0][1][0].endsWith('ai-agent-bell.js') &&
           spawns[0][1].includes('--event') &&
           spawns[0][1].includes('complete') &&
@@ -416,29 +554,32 @@ async function main() {
           spawns[3][1].includes('question') &&
           spawns[4][1].includes('question') &&
           spawns[5][1].includes('question') &&
-          spawns[6][1].includes('error')
+          spawns[6][1].includes('question') &&
+          spawns[7][1].includes('error')
       );
       check(
         'spawn detached, hidden, unref (never the opencode binary)',
         spawns.every((s) => s[2] && s[2].detached && s[2].windowsHide && !String(s[0]).includes('opencode'))
       );
       check('spawn path unref called', spawns.every((s) => s.unrefCalled));
+      if (typeof stop === 'function') stop();
 
       // D2: unbaked copy (hand-copied file) falls back to inline beeps, silent here.
       spawns.length = 0;
       const plain = await import(toMjs(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'plain.mjs'));
-      const hooks2 = await plain.TaskAlarm({});
-      await hooks2.event({ event: { type: 'session.idle' } });
+      plain.default.setup(makeCtx([{ type: 'session.idle', data: {} }]));
       check(
         'fallback used when CLI missing (powershell spawn, no CLI)',
-        spawns.length === 1 && spawns[0][0] === 'powershell' && !spawns[0][1].join(' ').includes('ai-agent-bell.js')
+        (await waitFor(() => spawns.length === 1)) &&
+          spawns[0][0] === 'powershell' &&
+          !spawns[0][1].join(' ').includes('ai-agent-bell.js')
       );
       check('fallback beeps complete freq', spawns[0][1].join(' ').includes('1000'));
 
       // D3: npm-mode entry resolves via detectors registry (stubbed playAlarm, no sound).
-      // index.js is ESM with a relative import, so it is copied to a .mjs file
+      // index.mjs is ESM with relative imports, so it is copied to a .mjs file
       // at the repo root (same dir -> relatives resolve) and removed afterwards.
-      // The lib/alarm stub is installed BEFORE import; index.js looks the call
+      // The lib/alarm stub is installed BEFORE import; index.mjs looks the call
       // up at event time, so the stub is honoured.
       const alarmLib = require('../lib/alarm');
       const realPlay = alarmLib.playAlarm;
@@ -448,23 +589,27 @@ async function main() {
       };
       const indexTmp = path.join(ROOT, '.smoke-index-check.mjs');
       try {
-        fs.writeFileSync(indexTmp, fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8'));
+        fs.writeFileSync(indexTmp, fs.readFileSync(path.join(ROOT, 'index.mjs'), 'utf8'));
         const npmPlugin = await import(pathToFileURL(indexTmp).href);
-        const hooks3 = await npmPlugin.TaskAlarm({});
-        const ev3 = (type, properties) => hooks3.event({ event: { type, properties: properties || {} } });
-        await ev3('session.created', { sessionID: 'c1', info: { parentID: 'm1' } }); // subagent tracked, silent
-        await ev3('session.idle', { sessionID: 'm1' }); // complete
-        await ev3('session.idle', { sessionID: 'c1' }); // child idle mid-task -> silent
-        await ev3('session.status', { sessionID: 'm2', status: 'idle' }); // complete
-        await ev3('session.status', { sessionID: 'm2', status: 'busy' }); // mid-task busy -> silent
-        await ev3('permission.asked', { sessionID: 'q1' }); // question
-        await ev3('tool.execute.before', { sessionID: 'q2', tool: 'question' }); // question
-        await ev3('tool.execute.before', { sessionID: 'q3', tool: 'bash' }); // other tool -> silent
-        await ev3('nope', {});
+        npmPlugin.default.setup(
+          makeCtx([
+            { type: 'session.created', data: { sessionID: 'c1', parentID: 'm1' } }, // subagent tracked, silent
+            { type: 'session.idle', data: { sessionID: 'm1' } }, // complete
+            { type: 'session.idle', data: { sessionID: 'c1' } }, // child idle mid-task -> silent
+            { type: 'session.status', data: { sessionID: 'm2', status: 'idle' } }, // complete (string status shape)
+            { type: 'session.status', data: { sessionID: 'm2', status: 'busy' } }, // mid-task busy -> silent
+            { type: 'permission.asked', data: { sessionID: 'q1' } }, // question
+            { type: 'form.created', data: { form: { id: 'f1', sessionID: 'q2' } } }, // 2.x question form -> question
+            { type: 'tool.execute.before', properties: { sessionID: 'q3', tool: 'question' } }, // legacy question
+            { type: 'tool.execute.before', properties: { sessionID: 'q4', tool: 'bash' } }, // other tool -> silent
+            { type: 'nope', data: {} },
+          ])
+        );
+        const drained = await waitFor(() => execs.filter((a) => a[0] === 'playAlarm-stub').length === 5);
         const stubCalls = execs.filter((a) => a[0] === 'playAlarm-stub').map((a) => a[1]);
         check(
           'npm plugin maps main idle/status+questions, ignores child/busy/unknown',
-          JSON.stringify(stubCalls) === '["complete","complete","question","question"]'
+          drained && JSON.stringify(stubCalls) === '["complete","complete","question","question","question"]'
         );
       } finally {
         alarmLib.playAlarm = realPlay;

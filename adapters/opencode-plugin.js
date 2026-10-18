@@ -6,11 +6,14 @@
  * SELF-CONTAINED: it is copied out of the package, so it cannot import
  * sibling files. Event mapping mirrors detectors/ (source of truth).
  *
- * Module shape matters: opencode calls EVERY export as a plugin factory and
- * drops the whole file when any export is not a function. So this file has
- * exactly ONE export (TaskAlarm, ESM) and must never use CJS-style exports.
- * (A CJS-shaped copy fails to load with "Plugin export is not a function" —
- * probed on opencode 1.18.x.)
+ * Module shape (probed on opencode 2.0.32): the server reads the DEFAULT
+ * export and requires a definition with an `id` plus an `effect` or `setup`
+ * function. A V1-style named export drops the whole file with
+ * "Plugin must export a default definition with an id and an effect or setup
+ * function." Events arrive through ctx.event.subscribe(); on 2.x the payload
+ * sits on event.data. The extra server() method keeps this same file working
+ * on opencode 1.18.29+, which calls an object entrypoint's server() and
+ * delivers events with the payload on event.properties.
  *
  * Strategy: spawn the real CLI with node (baked absolute paths below) so the
  * full engine runs — detectors, distinct sounds, config-file repeat count,
@@ -34,8 +37,9 @@ const KIND_BY_EVENT = {
   'session.idle': 'complete',
   'session.error': 'error',
   'permission.asked': 'question',
-  'permission.updated': 'question',
-  'question.asked': 'question',
+  'form.created': 'question', // 2.x question/elicitation form — user must answer
+  'permission.updated': 'question', // legacy 1.x event, kept for server()
+  'question.asked': 'question', // legacy 1.x event, kept for server()
 };
 // NOTE: 'session.status' (busy/idle/...) and 'tool.execute.before' (every tool)
 // are resolved in the event handler with property guards — never here — so a
@@ -56,12 +60,14 @@ const CHILD_SESSIONS = new Set();
 const LAST_RING_MS = new Map();
 
 function propsOf(event) {
-  return (event && event.properties) || {};
+  // 2.x: payload on event.data. 1.x: payload on event.properties.
+  return (event && (event.data || event.properties)) || {};
 }
 
 function sessionIdOf(props) {
   const info = (props && props.info) || {};
-  return props.sessionID || props.sessionId || info.sessionID || info.id || '';
+  const form = (props && props.form) || {};
+  return props.sessionID || props.sessionId || info.sessionID || info.id || form.sessionID || '';
 }
 
 function statusOf(props) {
@@ -179,41 +185,68 @@ function alarm(kind) {
   }
 }
 
-export async function TaskAlarm() {
-  return {
-    event: async ({ event }) => {
-      try {
-        const type = event && event.type;
-        if (!type) return;
-        const props = propsOf(event);
-        // Learn subagent ids first — never ring for these bookkeeping events.
-        if (type === 'session.created' || type === 'session.updated') {
-          noteChildSession(props);
-          return;
-        }
-        let kind = KIND_BY_EVENT[type] || null;
-        if (type === 'session.status') {
-          // Modern replacement for deprecated session.idle. Busy/retry
-          // transitions mid-task must stay silent — idle-only.
-          if (statusOf(props) !== 'idle') return;
-          kind = 'complete';
-        } else if (type === 'tool.execute.before') {
-          // Fires before every tool — only the question tool needs the user.
-          if (toolNameOf(props) !== 'question') return;
-          kind = 'question';
-        }
-        if (!kind) return;
-        const sid = sessionIdOf(props);
-        // Subagent finished/failed while the main task continues: stay silent.
-        if ((kind === 'complete' || kind === 'error') && sid && CHILD_SESSIONS.has(sid)) return;
-        // Same-session double-fire (idle + status for one completion): ring once.
-        if (cooledDown(kind, sid)) return;
-        alarm(kind);
-      } catch (_) {
-        try {
-          fallbackBeep('complete');
-        } catch (_) {}
-      }
-    },
-  };
+function handleEvent(event) {
+  // Shared by the 2.x ctx.event.subscribe() loop and the 1.x `event` hook.
+  try {
+    const type = event && event.type;
+    if (!type) return;
+    const props = propsOf(event);
+    // Learn subagent ids first — never ring for these bookkeeping events.
+    if (type === 'session.created' || type === 'session.updated') {
+      noteChildSession(props);
+      return;
+    }
+    let kind = KIND_BY_EVENT[type] || null;
+    if (type === 'session.status') {
+      // Modern replacement for deprecated session.idle. Busy/retry
+      // transitions mid-task must stay silent — idle-only.
+      if (statusOf(props) !== 'idle') return;
+      kind = 'complete';
+    } else if (type === 'tool.execute.before') {
+      // Fires before every tool — only the question tool needs the user.
+      if (toolNameOf(props) !== 'question') return;
+      kind = 'question';
+    }
+    if (!kind) return;
+    const sid = sessionIdOf(props);
+    // Subagent finished/failed while the main task continues: stay silent.
+    if ((kind === 'complete' || kind === 'error') && sid && CHILD_SESSIONS.has(sid)) return;
+    // Same-session double-fire (idle + status for one completion): ring once.
+    if (cooledDown(kind, sid)) return;
+    alarm(kind);
+  } catch (_) {
+    try {
+      fallbackBeep('complete');
+    } catch (_) {}
+  }
 }
+
+export default {
+  id: 'ai-agent-bell',
+  setup(ctx) {
+    // opencode 2.x: subscribe to the server event stream. The loop must not
+    // die on a stream hiccup (the bell would go silent), so it resubscribes
+    // until the plugin unloads via the returned cleanup.
+    if (!ctx || !ctx.event || typeof ctx.event.subscribe !== 'function') return undefined;
+    const controller = new AbortController();
+    void (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            handleEvent(event);
+          }
+        } catch (_) {
+          /* stream ended or aborted */
+        }
+        if (!controller.signal.aborted) await new Promise((r) => setTimeout(r, 2000));
+      }
+    })();
+    return () => controller.abort();
+  },
+  // opencode 1.18.29+ object entrypoint: same guards, V1 event shape.
+  async server() {
+    return {
+      event: async ({ event }) => handleEvent(event),
+    };
+  },
+};

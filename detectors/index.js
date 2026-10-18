@@ -23,7 +23,8 @@ function byId(id) {
  * Resolve which detector owns a native tool event.
  * @param {'opencode'|'claude'|'codex'} tool
  * @param {string|object} typeOrEvent native event name (e.g. 'session.idle')
- *   or the full event object ({ type, properties })
+ *   or the full event object ({ type, data }) — 2.x events carry the payload
+ *   on .data, 1.x on .properties; both are accepted.
  * @param {object} [extraProps] event properties when only the type string is passed
  * @returns detector or null when the event needs no alarm
  */
@@ -32,7 +33,7 @@ function forToolEvent(tool, typeOrEvent, extraProps) {
   let props = null;
   if (typeOrEvent && typeof typeOrEvent === 'object') {
     type = typeOrEvent.type || null;
-    props = typeOrEvent.properties || extraProps || null;
+    props = typeOrEvent.data || typeOrEvent.properties || extraProps || null;
   } else {
     type = typeOrEvent || null;
     props = extraProps || null;

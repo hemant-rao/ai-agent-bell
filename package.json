@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-bell",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "AI Agent Bell: a loud alarm when your AI coding agent finishes, fails, or needs your input. Works with OpenCode, Claude Code, Codex CLI and any terminal tool. Global-only: zero project impact, never ships in your build.",
   "license": "MIT",
   "author": "Hemant Rao",
@@ -27,7 +27,11 @@
     "node": ">=18"
   },
   "type": "commonjs",
-  "main": "index.js",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "ai-agent-bell": "./bin/ai-agent-bell.js",
     "ai-alarm": "./bin/ai-agent-bell.js"
@@ -38,11 +42,13 @@
     "detectors/",
     "notifications/",
     "adapters/",
-    "index.js",
+    "index.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --check bin/ai-agent-bell.js && node --check lib/alarm.js && node --check lib/config.js && node --input-type=module --check < index.js && node --check detectors/index.js && node --check detectors/completion.js && node --check detectors/input-required.js && node --check detectors/error.js && node --check detectors/warning.js && node --check notifications/sound.js && node --check notifications/desktop.js && node --check notifications/terminal.js && node --input-type=module --check < adapters/opencode-plugin.js && node tests/smoke.js"
+    "test": "node --check bin/ai-agent-bell.js && node --check lib/alarm.js && node --check lib/config.js && node --check index.mjs && node --check detectors/index.js && node --check detectors/completion.js && node --check detectors/input-required.js && node --check detectors/error.js && node --check detectors/warning.js && node --check notifications/sound.js && node --check notifications/desktop.js && node --check notifications/terminal.js && node --input-type=module --check < adapters/opencode-plugin.js && node --check tools/verify-opencode.js && node tests/smoke.js",
+    "verify:opencode": "node tools/verify-opencode.js",
+    "prepublishOnly": "npm test"
   }
 }

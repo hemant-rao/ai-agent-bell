@@ -172,7 +172,7 @@ ai-agent-bell --event question --times 3
 
 | Tool | What setup writes | What it means |
 |---|---|---|
-| **OpenCode** | `~/.config/opencode/plugins/ai-agent-bell.js` (fresh copy, baked CLI + node paths) | `session.idle` / idle-only `session.status` → complete · `permission.asked` / `permission.updated` / `question.asked` / question-tool → question · `session.error` → error |
+| **OpenCode** | `~/.config/opencode/plugins/ai-agent-bell.js` (fresh copy, baked CLI + node paths; 2.x default-definition shape, still compatible with 1.18.29+) | `session.idle` / idle-only `session.status` → complete · `permission.asked` / `form.created` → question (2.x) · `permission.updated` / `question.asked` / question-tool → question (1.x) · `session.error` → error |
 | **Claude Code** | global `~/.claude/settings.json` hooks (merged, yours preserved) | `Stop` → complete · `StopFailure` → error · `Notification` → question (matcher restricted to actionable types only: `permission_prompt\|idle_prompt\|elicitation_dialog\|elicitation_url_dialog\|agent_needs_input`) |
 | **Codex CLI** | global `~/.codex/config.toml` block (appended once) | `[[hooks.Stop]]` → complete · `[[hooks.PermissionRequest]]` → question. Never a top-level `notify` key (that would risk a duplicate-TOML-key parse error). |
 
@@ -180,7 +180,7 @@ Notes worth knowing:
 
 - **OpenCode plugin is a copy.** Updating the npm package never refreshes it — re-run `ai-agent-bell setup` after every update, then restart OpenCode (plugins load at startup).
 - **No double ringing.** Setup removes its own pre-release copy (`ai-task-alarm.js`) and rebrands old hook commands (`ai-task-alarm` / `ai-alarm` → `ai-agent-bell`) in place. It warns about foreign DIY files using `-WindowStyle Hidden` (that flag minimizes your terminal) but never deletes files it did not create.
-- **Never in a project.** Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugin": ["ai-agent-bell"]` to global opencode config. Never put these inside a project folder.
+- **Never in a project.** Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugins": ["ai-agent-bell"]` to global opencode config (V2; older 1.x used the `"plugin"` key). Never put these inside a project folder.
 
 ---
 
@@ -262,16 +262,29 @@ notifications/           how it tells you (sound, desktop toast, terminal bell)
 lib/                     repeat-count file + orchestration
 adapters/                copy-paste pieces for each AI tool
 tests/                   silent test suite
-index.js                 opencode npm-plugin entry (ESM, single export)
+tools/                   live opencode compatibility check (verify:opencode)
+index.mjs                opencode npm-plugin entry (ESM default export)
 ```
 
 Run the checks (silent, CI-safe — never plays sound):
 
 ```bash
-npm test
+npm test                  # CLI, detectors, adapters, packaging
+npm run verify:opencode   # live: the real opencode must load the plugin
 ```
 
-Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugin": ["ai-agent-bell"]` to global opencode config. Never put these inside a project folder.
+`verify:opencode` is a live compatibility check: it installs the plugin into a
+throwaway HOME and asks the real opencode server whether both the `setup` copy
+and the packaged npm plugin load — no model calls, no sound, your real config
+untouched. Run it after every opencode upgrade and before every release.
+opencode changed the plugin API shape between 1.x and 2.x (that is what broke
+the bell once), and only a real host load catches that class of break.
+GitHub Actions runs the silent suite on every push (CI) and re-runs
+`verify:opencode` against the *latest* opencode every week (canary), so a host
+API change goes red before users ever see it. `prepublishOnly` runs the suite,
+so a broken tarball can never be published.
+
+Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugins": ["ai-agent-bell"]` to global opencode config (V2; older 1.x used the `"plugin"` key). Never put these inside a project folder.
 
 No-Node fallback: `adapters/no-node-fallback.md`.
 
@@ -279,6 +292,7 @@ No-Node fallback: `adapters/no-node-fallback.md`.
 
 ## Changelog
 
+- **1.0.5** — OpenCode 2.x support: the plugin now default-exports a V2 definition (`{ id, setup }`) and subscribes to the 2.x event stream (`ctx.event.subscribe`, payloads on `event.data`, `form.created` → question; `permission.asked` kept), fixing "Plugin must export a default definition with an id and an effect or setup function." The old V1 shape (named export returning an `event` hook) no longer loads on 2.x. Still works on opencode 1.18.29+ through the added `server()` entrypoint. npm plugin entry renamed to `index.mjs`. Verified live on opencode 2.0.32. Packaging hardening so this can never silently recur: `exports` map, `prepublishOnly` test gate, tarball-content check in the smoke suite, `npm run verify:opencode` live host check, and GitHub Actions CI + weekly opencode canary.
 - **1.0.4** — No more mid-task false alarms (OpenCode): subagent (Task-tool child) completions stay silent, `session.status` rings on `idle` only (busy/retry silent), `tool.execute.before` rings for the `question` tool only, same-session double-fire (`session.idle` + `session.status`) rings once via cooldown, plus `permission.updated` support. Same guards in both the file-copy plugin and the npm plugin entry.
 - **1.0.3** — Fixed total OpenCode silence: ESM single-export plugin entries, baked node binary spawn (never the host binary), `question.asked` mapped. Verified live on opencode 1.18.35.
 - **1.0.2** — Default repeats 10 → 5; `test` rings the saved count; friendly CLI (bare number = `--times N`, filler words ignored); `--version` reads package.json; `setup` warns about foreign `-WindowStyle` plugins.

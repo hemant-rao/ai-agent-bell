@@ -1,0 +1,36 @@
+name: OpenCode canary
+
+# The opencode plugin API is host-versioned: 1.x used named-export factories
+# with event.properties, 2.x requires a default { id, setup } definition with
+# event.data — that drift once broke the bell ("Plugin must export a default
+# definition...") without a single local test failing, because every test
+# stubs the host. This job installs the LATEST opencode weekly and proves the
+# plugin really loads, so the next API change goes red here before it reaches
+# users.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: latest opencode / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the latest opencode
+        run: npm install --global @opencode/cli
+      - name: Live plugin-load check (throwaway HOME, silent, no model calls)
+        run: node tools/verify-opencode.js

@@ -17,7 +17,15 @@ module.exports = {
   matches: {
     // NOTE: 'tool.execute.before' fires before EVERY tool run, so
     // forToolEvent() guards it to the question tool only (see detectors/index.js).
-    opencode: ['permission.asked', 'permission.updated', 'question.asked', 'tool.execute.before'],
+    // 'form.created' is the 2.x question/elicitation form; 'question.asked' and
+    // 'permission.updated' are legacy 1.x events kept for old opencode versions.
+    opencode: [
+      'permission.asked',
+      'form.created',
+      'permission.updated',
+      'question.asked',
+      'tool.execute.before',
+    ],
     claude: ['Notification'],
     codex: ['PermissionRequest'],
   },
