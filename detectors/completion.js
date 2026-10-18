@@ -17,7 +17,9 @@ module.exports = {
     // NOTE: 'session.status' fires for EVERY busy/idle/retry transition, so
     // forToolEvent() guards it to idle-only (see detectors/index.js).
     // Without that guard a mid-task busy->... transition would ring "complete".
-    opencode: ['session.idle', 'session.status'],
+    // opencode 2.x emits 'session.execution.succeeded' when an execution (turn)
+    // finishes; it no longer sends session.idle/session.status at all.
+    opencode: ['session.execution.succeeded', 'session.idle', 'session.status'],
     claude: ['Stop'],
     codex: ['Stop'],
   },

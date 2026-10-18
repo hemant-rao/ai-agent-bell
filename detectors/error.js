@@ -14,7 +14,8 @@ module.exports = {
     linux: 'dialog-error.oga',
   },
   matches: {
-    opencode: ['session.error'],
+    // opencode 2.x failure signal; session.error is the legacy 1.x name.
+    opencode: ['session.execution.failed', 'session.error'],
     claude: ['StopFailure'],
     codex: [],
   },

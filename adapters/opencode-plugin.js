@@ -34,8 +34,10 @@ const CLI_JS = '__CLI_ABS_PATH__';
 const NODE_BIN = '__NODE_BIN_PATH__';
 
 const KIND_BY_EVENT = {
-  'session.idle': 'complete',
-  'session.error': 'error',
+  'session.execution.succeeded': 'complete', // 2.x: execution (turn) finished
+  'session.execution.failed': 'error', // 2.x: execution (turn) failed
+  'session.idle': 'complete', // legacy 1.x idle signal
+  'session.error': 'error', // legacy 1.x error signal
   'permission.asked': 'question',
   'form.created': 'question', // 2.x question/elicitation form — user must answer
   'permission.updated': 'question', // legacy 1.x event, kept for server()
@@ -45,10 +47,13 @@ const KIND_BY_EVENT = {
 // are resolved in the event handler with property guards — never here — so a
 // mid-task busy transition or a non-question tool can never ring.
 
-// Cooldown per (kind + session): kills double-fires from deprecated
-// 'session.idle' + modern 'session.status' arriving for the SAME completion,
-// without suppressing legit back-to-back completions of other sessions.
-// Question/error keep a short fuse: the user must act every time.
+// Cooldown per (kind + session): kills double-fires — 1.x 'session.idle' +
+// 'session.status' for the SAME completion, and the same 2.x event seen by
+// the several plugin instances opencode 2.x runs per server (4 observed on
+// 2.0.32). In-memory timers only dedup one instance, so the claim lives in
+// exclusive lock files under the OS temp dir: the first instance rings, the
+// others see a fresh claim and stay silent. Question/error keep a short
+// fuse: the user must act every time.
 const COOLDOWN_MS = { complete: 15000, question: 3000, error: 3000, warning: 0 };
 
 // Child (Task-tool subagent) sessions. Their idle/error events are
@@ -57,7 +62,6 @@ const COOLDOWN_MS = { complete: 15000, question: 3000, error: 3000, warning: 0 }
 // running — ringing for them is exactly the "mid-task alarm" bug. Child ids
 // are learned from session.created/session.updated, which DO carry parentID.
 const CHILD_SESSIONS = new Set();
-const LAST_RING_MS = new Map();
 
 function propsOf(event) {
   // 2.x: payload on event.data. 1.x: payload on event.properties.
@@ -91,11 +95,48 @@ function noteChildSession(props) {
 function cooledDown(kind, sid) {
   const ms = COOLDOWN_MS[kind] || 0;
   if (ms <= 0) return false;
-  const key = kind + ':' + (sid || '-');
+  const dir = path.join(os.tmpdir(), 'ai-agent-bell-locks');
+  const lock = path.join(
+    dir,
+    kind + '-' + (String(sid || 'none').replace(/[^\w-]/g, '') || 'none') + '.lock'
+  );
   const now = Date.now();
-  if (now - (LAST_RING_MS.get(key) || 0) < ms) return true;
-  LAST_RING_MS.set(key, now);
-  return false;
+  const claim = () => {
+    try {
+      fs.writeFileSync(lock, String(now), { flag: 'wx' }); // atomic create
+      return true;
+    } catch (e) {
+      // EEXIST = another instance holds a claim; any other fs error must
+      // never mute the bell.
+      return !e || e.code !== 'EEXIST';
+    }
+  };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    if (claim()) return false;
+    let age = null;
+    try {
+      age = now - fs.statSync(lock).mtimeMs;
+    } catch (_) {
+      /* vanished between claim and stat */
+    }
+    if (age !== null && age < ms) return true; // another instance rang just now
+    if (age === null) return !claim(); // lock vanished: retry the claim
+    // Stale claim: take it over via an atomic rename so exactly one instance
+    // wins even when several race here.
+    const tomb = lock + '.' + process.pid + '.' + Math.random().toString(36).slice(2);
+    try {
+      fs.renameSync(lock, tomb);
+      try {
+        fs.unlinkSync(tomb);
+      } catch (_) {}
+    } catch (_) {
+      return true; // another instance took over — it rings instead
+    }
+    return !claim();
+  } catch (_) {
+    return false; // lock dir unusable: never mute the bell
+  }
 }
 
 const FALLBACK_FREQ = { complete: 1000, question: 1400, error: 450, warning: 800 };

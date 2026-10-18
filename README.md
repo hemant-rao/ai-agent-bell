@@ -105,7 +105,7 @@ ai-agent-bell --event warning
 Small print, honestly told:
 
 - In Claude Code, "finished" means one answer finished, not necessarily the whole task. That is still exactly when you want to look.
-- In OpenCode, mid-task noise stays silent by design: subagent (Task-tool child) completions, `busy` status transitions, and non-question tool runs never ring. Same-session double-fires (deprecated `session.idle` + modern `session.status`) ring once.
+- In OpenCode, mid-task noise stays silent by design: subagent (Task-tool child) completions, `busy` status transitions, and non-question tool runs never ring. Duplicate deliveries of the same completion (2.x hands every event to several plugin instances; 1.x double-fired `session.idle` + `session.status`) ring once.
 
 ---
 
@@ -172,7 +172,7 @@ ai-agent-bell --event question --times 3
 
 | Tool | What setup writes | What it means |
 |---|---|---|
-| **OpenCode** | `~/.config/opencode/plugins/ai-agent-bell.js` (fresh copy, baked CLI + node paths; 2.x default-definition shape, still compatible with 1.18.29+) | `session.idle` / idle-only `session.status` → complete · `permission.asked` / `form.created` → question (2.x) · `permission.updated` / `question.asked` / question-tool → question (1.x) · `session.error` → error |
+| **OpenCode** | `~/.config/opencode/plugins/ai-agent-bell.js` (fresh copy, baked CLI + node paths; 2.x default-definition shape, still compatible with 1.18.29+) | `session.execution.succeeded` → complete · `session.execution.failed` → error (2.x — 1.18.x used `session.idle` / idle-only `session.status` → complete · `session.error` → error) · `permission.asked` / `form.created` → question (2.x) · `permission.updated` / `question.asked` / question-tool → question (1.x) |
 | **Claude Code** | global `~/.claude/settings.json` hooks (merged, yours preserved) | `Stop` → complete · `StopFailure` → error · `Notification` → question (matcher restricted to actionable types only: `permission_prompt\|idle_prompt\|elicitation_dialog\|elicitation_url_dialog\|agent_needs_input`) |
 | **Codex CLI** | global `~/.codex/config.toml` block (appended once) | `[[hooks.Stop]]` → complete · `[[hooks.PermissionRequest]]` → question. Never a top-level `notify` key (that would risk a duplicate-TOML-key parse error). |
 
@@ -294,6 +294,7 @@ No-Node fallback: `adapters/no-node-fallback.md`.
 
 ## Changelog
 
+- **1.0.6** — OpenCode 2.x ringing fix (1.0.5 was silent on 2.x): finished turns ring from `session.execution.succeeded` and failures from `session.execution.failed` (2.x no longer emits `session.idle`/`session.status`). The host runs several plugin instances per server, so dupe suppression now claims through an exclusive lock file (temp dir) — one bell per completion instead of four overlapping alarms. Subagent (Task-tool child) completions, busy transitions and `form.cancelled` stay silent. Verified live on opencode 2.0.32: complete/question/error each ring exactly once; child sessions ring nothing.
 - **1.0.5** — OpenCode 2.x support: the plugin now default-exports a V2 definition (`{ id, setup }`) and subscribes to the 2.x event stream (`ctx.event.subscribe`, payloads on `event.data`, `form.created` → question; `permission.asked` kept), fixing "Plugin must export a default definition with an id and an effect or setup function." The old V1 shape (named export returning an `event` hook) no longer loads on 2.x. Still works on opencode 1.18.29+ through the added `server()` entrypoint. npm plugin entry renamed to `index.mjs`. Verified live on opencode 2.0.32. Packaging hardening so this can never silently recur: `exports` map, `prepublishOnly` test gate, tarball-content check in the smoke suite, `npm run verify:opencode` live host check, and GitHub Actions CI + weekly opencode canary.
 - **1.0.4** — No more mid-task false alarms (OpenCode): subagent (Task-tool child) completions stay silent, `session.status` rings on `idle` only (busy/retry silent), `tool.execute.before` rings for the `question` tool only, same-session double-fire (`session.idle` + `session.status`) rings once via cooldown, plus `permission.updated` support. Same guards in both the file-copy plugin and the npm plugin entry.
 - **1.0.3** — Fixed total OpenCode silence: ESM single-export plugin entries, baked node binary spawn (never the host binary), `question.asked` mapped. Verified live on opencode 1.18.35.

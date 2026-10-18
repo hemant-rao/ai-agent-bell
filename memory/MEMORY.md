@@ -89,9 +89,10 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   cleanup that aborts the subscription. V2 event payloads sit on `event.data`
   (1.x used `event.properties`) — propsOf/`forToolEvent` accept both.
   `question.asked` is gone in 2.x: questions are `form.created` (payload
-  `{ form: { id, sessionID } }`, mapped to question); `permission.asked`
-  stays; `session.status idle` + `session.idle` semantics unchanged. The
-  subscribe loop resubscribes every 2s after a hiccup so the bell can never
+  `{ form: { id, sessionID, title, metadata } }`, mapped to question);
+  `permission.asked` stays. CORRECTED same day: `session.idle`/`session.status`
+  are NOT emitted at all on 2.0.32 — see the next gotcha. The subscribe loop
+  resubscribes every 2s after a hiccup so the bell can never
   die silently. npm entry renamed index.js → index.mjs (ESM under a
   `"type": "commonjs"` package must not masquerade as CJS again). Verified
   live on opencode 2.0.32: `/api/plugin` lists `ai-agent-bell`
@@ -99,6 +100,37 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   re-installed with the repo's own `setup --tools opencode`, which baked the
   REPO CLI path; after the 1.0.5 release the installed `setup` re-baked it to
   the npm path and `opencode reload` hot-loaded it — no service restart).
+- Gotcha (seen 2026-10-18, right after 1.0.5 shipped — "no bell rings at all
+  on 2.0.32"): the 2.x port subscribed correctly but listened for V1 event
+  names 2.x never emits. Ground truth from temporary JSONL tracing inside the
+  INSTALLED plugin (backup + instrumentation under `.debug/`): a finished turn
+  is **`session.execution.succeeded`** (`{sessionID}`, once per execution, no
+  turn id), a failed one is **`session.execution.failed`**
+  (`{sessionID, error:{type,message}}`, e.g. `provider.no-route`); zero
+  `session.idle`/`session.status` events all day (the strings survive in the
+  binary as unreferenced legacy). ALSO: the server instantiates the plugin
+  file FOUR times per server pid (4x `setup()` + 4 subscriptions; every event
+  arrived 4x in the trace) — per-closure in-memory cooldown CANNOT dedup
+  across instances, and one completion spawned 4 overlapping alarms. FIX:
+  execution-event mappings in detectors/completion.js, detectors/error.js,
+  adapters/opencode-plugin.js (KIND_BY_EVENT) and index.mjs (via
+  `forToolEvent`), plus the per-(kind+session) cooldown now claims through an
+  EXCLUSIVE lock file `<os.tmpdir()>/ai-agent-bell-locks/<kind>-<sid>.lock`:
+  `wx` create = atomic first claim (losers see a fresh mtime and skip);
+  stale claims (>= cooldown) are taken over via atomic rename so exactly one
+  instance wins; any fs error returns "ring" (never mute). CHILD guard
+  verified on 2.x: child `session.created` carries top-level `parentID`, and
+  child sessions DO emit `execution.succeeded` — both stay silent. Live
+  verified (bell-check runs + spawn counts): complete/question/error each →
+  4x match, **1 alarm + 3 cooldown-skip**; child → `child=True`, zero alarms;
+  `form.created` confirmed payload `{form:{id,sessionID,title,metadata:
+  {kind:'question'}}}`; `form.cancelled` silent; clean build → exactly ONE
+  node alarm process alive. Smoke tests cover fresh-claim-silent,
+  stale-takeover, claim counts, child silence — hermetic via TEMP/TMP
+  override. Machine state after the fix: installed plugin re-baked from the
+  REPO (`node bin/ai-agent-bell.js setup --tools opencode`) → carries the fix,
+  points at the repo CLI; the GLOBAL `ai-agent-bell setup` is still 1.0.5 and
+  would REVERT the fix — do not re-run it until 1.0.6 ships.
 - Release safety (added 2026-10-18, so a host-API break like the one above can
   never ship silently again): `npm run verify:opencode`
   (tools/verify-opencode.js) is a LIVE check — throwaway HOME (USERPROFILE +
@@ -192,6 +224,23 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   global npm install 1.0.5, tag `v1.0.5` pushed, installed opencode plugin
   copy re-baked to the npm CLI path (`setup`) and hot-loaded (`opencode
   reload`); `opencode plugin list` lists ai-agent-bell.
+  WARNING: 1.0.5 rings NOTHING on opencode 2.x — it listens for the dead V1
+  event names. The fix sits in the working tree (unreleased).
+- `1.0.6` (2026-10-18) — 2.x ringing fix + cross-instance lock dedup (full
+  trace in the gotcha "no bell rings at all on 2.0.32" above). Source
+  changes: detectors/completion.js + detectors/error.js (execution-event
+  mappings), adapters/opencode-plugin.js (KIND_BY_EVENT), index.mjs (lock
+  claim + node imports), tests/smoke.js (claim/takeover/child coverage),
+  README, .gitignore (.debug/). Release flow: version bump → `npm test` →
+  `npm run verify:opencode` → push → `npm stage publish .` → USER approves on
+  npmjs.com (+2FA) → tag `v1.0.6`, `npm i -g ai-agent-bell`, `ai-agent-bell
+  setup` (re-bake: NOW the fixed adapter with the npm CLI path), `opencode
+  reload`. Acceptance after install: `opencode run "Reply with exactly:
+  ok. Do not use any tools."` rings exactly ONE bell (single node alarm
+  process). Machine state until then: the installed plugin copy is baked
+  from the REPO (points at the repo CLI) and already carries the fix — do
+  NOT re-run the global 1.0.5 `setup`; it would overwrite the copy with the
+  old adapter.
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).

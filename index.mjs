@@ -21,18 +21,74 @@
 
 // NOTE: default imports (not destructured) so the bindings always resolve
 // through the CJS module objects at call time.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import detectors from './detectors/index.js';
 import alarmLib from './lib/alarm.js';
 
-// Subagent (Task-tool child) sessions emit idle/error events identical to the
-// main session's while the main task still runs — ringing for them is the
-// "mid-task alarm" bug. Learned from session.created/session.updated, which
-// carry parentID (session.status/session.idle do not). Mirrors the guards in
+// Subagent (Task-tool child) sessions emit completion/error events identical
+// to the main session's (2.x: session.execution.succeeded/failed) while the
+// main task still runs — ringing for them is the "mid-task alarm" bug.
+// Learned from session.created/session.updated, which carry parentID
+// (the execution events do not). Mirrors the guards in
 // adapters/opencode-plugin.js (that file is self-contained, so logic is
 // duplicated, not imported — keep both in sync).
 const CHILD_SESSIONS = new Set();
-const LAST_RING_MS = new Map();
 const COOLDOWN_MS = { complete: 15000, question: 3000, error: 3000, warning: 0 };
+
+// Cooldown per (kind + session): kills double-fires — 1.x 'session.idle' +
+// 'session.status' for the SAME completion, and the same 2.x event seen by
+// the several plugin instances opencode 2.x runs per server (4 observed on
+// 2.0.32). In-memory timers only dedup one instance, so the claim lives in
+// exclusive lock files under the OS temp dir: the first instance rings, the
+// others see a fresh claim and stay silent (mirrors the adapter copy).
+function cooledDown(kind, sid) {
+  const ms = COOLDOWN_MS[kind] || 0;
+  if (ms <= 0) return false;
+  const dir = path.join(os.tmpdir(), 'ai-agent-bell-locks');
+  const lock = path.join(
+    dir,
+    kind + '-' + (String(sid || 'none').replace(/[^\w-]/g, '') || 'none') + '.lock'
+  );
+  const now = Date.now();
+  const claim = () => {
+    try {
+      fs.writeFileSync(lock, String(now), { flag: 'wx' }); // atomic create
+      return true;
+    } catch (e) {
+      // EEXIST = another instance holds a claim; any other fs error must
+      // never mute the bell.
+      return !e || e.code !== 'EEXIST';
+    }
+  };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    if (claim()) return false;
+    let age = null;
+    try {
+      age = now - fs.statSync(lock).mtimeMs;
+    } catch (_) {
+      /* vanished between claim and stat */
+    }
+    if (age !== null && age < ms) return true; // another instance rang just now
+    if (age === null) return !claim(); // lock vanished: retry the claim
+    // Stale claim: take it over via an atomic rename so exactly one instance
+    // wins even when several race here.
+    const tomb = lock + '.' + process.pid + '.' + Math.random().toString(36).slice(2);
+    try {
+      fs.renameSync(lock, tomb);
+      try {
+        fs.unlinkSync(tomb);
+      } catch (_) {}
+    } catch (_) {
+      return true; // another instance took over — it rings instead
+    }
+    return !claim();
+  } catch (_) {
+    return false; // lock dir unusable: never mute the bell
+  }
+}
 
 function sessionIdOf(props) {
   const info = (props && props.info) || {};
@@ -57,13 +113,7 @@ function handleEvent(event) {
   if (!det) return;
   const sid = sessionIdOf(props);
   if ((det.id === 'complete' || det.id === 'error') && sid && CHILD_SESSIONS.has(sid)) return;
-  const cd = COOLDOWN_MS[det.id] || 0;
-  if (cd > 0) {
-    const key = det.id + ':' + (sid || '-');
-    const now = Date.now();
-    if (now - (LAST_RING_MS.get(key) || 0) < cd) return;
-    LAST_RING_MS.set(key, now);
-  }
+  if (cooledDown(det.id, sid)) return;
   alarmLib.playAlarm({ event: det.id, quiet: true, keyStop: false }).catch(() => {});
 }
 

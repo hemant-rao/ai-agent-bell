@@ -97,6 +97,18 @@ async function main() {
   check('adapter maps question.asked (agent question pauses)', adapterSrc.includes("'question.asked': 'question'"));
   check('adapter maps form.created (2.x question form)', adapterSrc.includes("'form.created': 'question'"));
   check(
+    'adapter maps session.execution.succeeded (2.x completion)',
+    adapterSrc.includes("'session.execution.succeeded': 'complete'")
+  );
+  check(
+    'adapter maps session.execution.failed (2.x failure)',
+    adapterSrc.includes("'session.execution.failed': 'error'")
+  );
+  check(
+    'adapter dedups rings across plugin instances (temp-dir claims)',
+    adapterSrc.includes("'ai-agent-bell-locks'")
+  );
+  check(
     'adapter spawns baked node, never the host binary',
     adapterSrc.includes('cp.spawn(nodeBin()') && !adapterSrc.includes('process.execPath')
   );
@@ -111,6 +123,7 @@ async function main() {
   );
   check('npm entry keeps a V1 server() entrypoint', indexSrc.includes('async server()'));
   check('npm entry reads 2.x .data and legacy .properties', indexSrc.includes('event.data || event.properties'));
+  check('npm entry dedups rings across plugin instances', indexSrc.includes("'ai-agent-bell-locks'"));
   check(
     'adapter fallback default is 5 (no stale 10)',
     adapterSrc.includes('return 5;') && !adapterSrc.includes('return 10;')
@@ -132,6 +145,15 @@ async function main() {
   );
   check('opencode idle -> complete', detectors.forToolEvent('opencode', 'session.idle')?.id === 'complete');
   check('opencode error -> error', detectors.forToolEvent('opencode', 'session.error')?.id === 'error');
+  check(
+    'opencode session.execution.succeeded -> complete (2.x)',
+    detectors.forToolEvent('opencode', { type: 'session.execution.succeeded', data: { sessionID: 's' } })?.id ===
+      'complete'
+  );
+  check(
+    'opencode session.execution.failed -> error (2.x)',
+    detectors.forToolEvent('opencode', { type: 'session.execution.failed', data: { sessionID: 's' } })?.id === 'error'
+  );
   check('opencode permission -> question', detectors.forToolEvent('opencode', 'permission.asked')?.id === 'question');
   check('opencode permission.updated -> question', detectors.forToolEvent('opencode', 'permission.updated')?.id === 'question');
   check('opencode question.asked -> question', detectors.forToolEvent('opencode', 'question.asked')?.id === 'question');
@@ -460,6 +482,14 @@ async function main() {
     // covers opencode 1.18.29+ object entrypoints.
     const { pathToFileURL } = require('node:url');
     const esmTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-esm-'));
+    // Ring claims live in <tmpdir>/ai-agent-bell-locks (shared across the
+    // several plugin instances the host runs). Point tmpdir at a fresh dir so
+    // runs never inherit claims from earlier tests or the host machine.
+    const lockTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aitest-locks-'));
+    const lockDir = path.join(lockTmp, 'ai-agent-bell-locks');
+    const prevTmpEnv = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+    process.env.TEMP = lockTmp;
+    process.env.TMP = lockTmp;
     const spawns = [];
     const execs = []; // records stubbed playAlarm calls in D3
     const origSpawn = cp.spawn;
@@ -504,6 +534,16 @@ async function main() {
       return true;
     };
     try {
+      // Pre-seeded claims in the overridden tmpdir: a FRESH claim means
+      // another plugin instance rang just now (must stay silent); a STALE
+      // claim (1h old) means a real new completion (takeover must ring).
+      fs.mkdirSync(lockDir, { recursive: true });
+      const freshClaim = String(Date.now());
+      fs.writeFileSync(path.join(lockDir, 'complete-ses_fresh.lock'), freshClaim);
+      fs.writeFileSync(path.join(lockDir, 'complete-ses_stale.lock'), '0');
+      const staleTime = new Date(Date.now() - 3600 * 1000);
+      fs.utimesSync(path.join(lockDir, 'complete-ses_stale.lock'), staleTime, staleTime);
+
       // D1: setup-baked copy — 2.x shape, payloads on .data, plus legacy
       // .properties events still honored for 1.x parity. Spawns stub out.
       const toMjs = (p, name) => {
@@ -527,35 +567,53 @@ async function main() {
           { type: 'session.idle', data: { sessionID: 'ses_main' } }, // main done -> complete #1
           { type: 'session.status', data: { sessionID: 'ses_main2', status: { type: 'idle' } } }, // modern idle -> complete #2
           { type: 'session.status', data: { sessionID: 'ses_main2', status: { type: 'busy' } } }, // mid-task busy -> silent
+          { type: 'session.execution.succeeded', data: { sessionID: 'ses_v2a' } }, // 2.x completion -> complete #3
+          { type: 'session.execution.succeeded', data: { sessionID: 'ses_v2a' } }, // other plugin instance already rang -> claim fresh, silent
+          { type: 'session.execution.failed', data: { sessionID: 'ses_v2b' } }, // 2.x failure -> error #4
+          { type: 'session.idle', data: { sessionID: 'ses_fresh' } }, // pre-existing fresh claim -> silent
+          { type: 'session.execution.succeeded', data: { sessionID: 'ses_stale' } }, // stale claim -> takeover -> complete #5
+          { type: 'session.execution.succeeded', data: { sessionID: 'ses_child' } }, // child 2.x completion mid-task -> silent
+          { type: 'session.execution.failed', data: { sessionID: 'ses_child' } }, // child 2.x failure mid-task -> silent
           { type: 'session.idle', data: { sessionID: 'ses_child' } }, // subagent done, main running -> silent
           { type: 'session.idle', data: { sessionID: 'ses_main' } }, // same-session double-fire -> cooldown silent
-          { type: 'permission.asked', data: { sessionID: 'ses_p1' } }, // question #3
-          { type: 'question.asked', properties: { sessionID: 'ses_p2' } }, // legacy 1.x payload -> question #4
-          { type: 'permission.updated', properties: { sessionID: 'ses_p3' } }, // legacy 1.x payload -> question #5
-          { type: 'form.created', data: { form: { id: 'f1', sessionID: 'ses_p4' } } }, // 2.x question form -> #6
-          { type: 'tool.execute.before', properties: { sessionID: 'ses_p5', tool: 'question' } }, // legacy -> #7
+          { type: 'permission.asked', data: { sessionID: 'ses_p1' } }, // question #6
+          { type: 'question.asked', properties: { sessionID: 'ses_p2' } }, // legacy 1.x payload -> question #7
+          { type: 'permission.updated', properties: { sessionID: 'ses_p3' } }, // legacy 1.x payload -> question #8
+          { type: 'form.created', data: { form: { id: 'f1', sessionID: 'ses_p4' } } }, // 2.x question form -> #9
+          { type: 'tool.execute.before', properties: { sessionID: 'ses_p5', tool: 'question' } }, // legacy -> #10
           { type: 'tool.execute.before', properties: { sessionID: 'ses_p6', tool: 'read' } }, // other tool -> silent
-          { type: 'session.error', data: { sessionID: 'ses_e1' } }, // error #8
+          { type: 'session.error', data: { sessionID: 'ses_e1' } }, // error #11
           { type: 'session.error', data: { sessionID: 'ses_child' } }, // child error -> silent
           { type: 'whatever', data: {} },
         ])
       );
-      check('baked copy spawns 8x (mid-task noise ignored)', await waitFor(() => spawns.length === 8));
+      check('baked copy spawns 11x (mid-task noise ignored)', await waitFor(() => spawns.length === 11));
       check('setup returns an abort-style cleanup', typeof stop === 'function');
       check(
         'spawn targets node + CLI with event kind',
-        spawns.length === 8 &&
+        spawns.length === 11 &&
           spawns[0][0] === process.execPath &&
           spawns[0][1][0].endsWith('ai-agent-bell.js') &&
           spawns[0][1].includes('--event') &&
-          spawns[0][1].includes('complete') &&
-          spawns[1][1].includes('complete') &&
-          spawns[2][1].includes('question') &&
-          spawns[3][1].includes('question') &&
-          spawns[4][1].includes('question') &&
+          spawns[0][1].includes('complete') && // 1.x session.idle
+          spawns[1][1].includes('complete') && // 1.x session.status idle
+          spawns[2][1].includes('complete') && // 2.x session.execution.succeeded
+          spawns[3][1].includes('error') && // 2.x session.execution.failed
+          spawns[4][1].includes('complete') && // stale claim taken over
           spawns[5][1].includes('question') &&
           spawns[6][1].includes('question') &&
-          spawns[7][1].includes('error')
+          spawns[7][1].includes('question') &&
+          spawns[8][1].includes('question') &&
+          spawns[9][1].includes('question') &&
+          spawns[10][1].includes('error')
+      );
+      // Cross-instance claims: one lock per ring (11) + the pre-seeded fresh
+      // one that blocked a ring (12); the stale one was taken over in place.
+      const lockFiles = fs.readdirSync(lockDir).filter((f) => f.endsWith('.lock'));
+      check('cross-instance ring claims written (11 rings + 1 blocked)', lockFiles.length === 12);
+      check(
+        'fresh claim blocked a ring (file untouched)',
+        fs.readFileSync(path.join(lockDir, 'complete-ses_fresh.lock'), 'utf8') === freshClaim
       );
       check(
         'spawn detached, hidden, unref (never the opencode binary)',
@@ -598,6 +656,10 @@ async function main() {
             { type: 'session.idle', data: { sessionID: 'c1' } }, // child idle mid-task -> silent
             { type: 'session.status', data: { sessionID: 'm2', status: 'idle' } }, // complete (string status shape)
             { type: 'session.status', data: { sessionID: 'm2', status: 'busy' } }, // mid-task busy -> silent
+            { type: 'session.execution.succeeded', data: { sessionID: 'm3' } }, // 2.x completion -> complete
+            { type: 'session.execution.succeeded', data: { sessionID: 'm3' } }, // fan-out duplicate -> cooldown silent
+            { type: 'session.execution.failed', data: { sessionID: 'm4' } }, // 2.x failure -> error
+            { type: 'session.execution.succeeded', data: { sessionID: 'c1' } }, // child 2.x completion -> silent
             { type: 'permission.asked', data: { sessionID: 'q1' } }, // question
             { type: 'form.created', data: { form: { id: 'f1', sessionID: 'q2' } } }, // 2.x question form -> question
             { type: 'tool.execute.before', properties: { sessionID: 'q3', tool: 'question' } }, // legacy question
@@ -605,11 +667,11 @@ async function main() {
             { type: 'nope', data: {} },
           ])
         );
-        const drained = await waitFor(() => execs.filter((a) => a[0] === 'playAlarm-stub').length === 5);
+        const drained = await waitFor(() => execs.filter((a) => a[0] === 'playAlarm-stub').length === 7);
         const stubCalls = execs.filter((a) => a[0] === 'playAlarm-stub').map((a) => a[1]);
         check(
-          'npm plugin maps main idle/status+questions, ignores child/busy/unknown',
-          drained && JSON.stringify(stubCalls) === '["complete","complete","question","question","question"]'
+          'npm plugin maps idle/status/execution+questions, ignores child/busy/unknown',
+          drained && JSON.stringify(stubCalls) === '["complete","complete","complete","error","question","question","question"]'
         );
       } finally {
         alarmLib.playAlarm = realPlay;
@@ -619,7 +681,12 @@ async function main() {
       }
     } finally {
       cp.spawn = origSpawn;
+      if (prevTmpEnv.TEMP === undefined) delete process.env.TEMP;
+      else process.env.TEMP = prevTmpEnv.TEMP;
+      if (prevTmpEnv.TMP === undefined) delete process.env.TMP;
+      else process.env.TMP = prevTmpEnv.TMP;
       fs.rmSync(esmTmp, { recursive: true, force: true });
+      fs.rmSync(lockTmp, { recursive: true, force: true });
     }
   } finally {
     fs.rmSync(fakeHome, { recursive: true, force: true });
