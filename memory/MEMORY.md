@@ -29,6 +29,7 @@ lib/                     config.js (repeat-count file) + alarm.js (orchestrator)
 adapters/                copy-paste pieces per tool (opencode-plugin.js, claude/codex snippets, no-node-fallback.md)
 tests/smoke.js           silent suite (never plays sound; stubs children; fake HOME)
 tools/verify-opencode.js live host check: real opencode must load the plugin (throwaway HOME)
+tools/ring-check.js      live RING acceptance: real sessions, the alarm process must appear (Windows; plays sound)
 .github/workflows/       ci.yml (silent suite on push) + opencode-canary.yml (weekly, latest opencode)
 index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyStop:false)
 ```
@@ -210,6 +211,48 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
    non-array hook keys skipped with a note; everything idempotent (re-runs add
    nothing); unknown `--tools`/args → exit 2 with message.
 
+## The ring is sacred (hard rule — added 2026-10-18, after the SECOND silence incident)
+
+The bell ringing is the only user-visible functionality of this package. A
+release that stops the ring is a total failure, worse than any other bug —
+and it has already happened twice (1.0.3: broken plugin shape /
+`process.execPath` spawn; 1.0.5: dead V1 event names on opencode 2.x). Both
+times the pre-release checks verified that the plugin LOADS (`state=active`,
+no load errors) and never verified that it RINGS. Loading is not ringing.
+
+Rules for ANY change that touches the ringing path (`adapters/`, `index.mjs`,
+`detectors/`, `notifications/`, `bin/`, plugin loading, event names,
+cooldowns, guards, `setup`):
+
+1. Never trust "it loads". The acceptance criterion is a real session that
+   ends in a real alarm process.
+2. Live-test on the author machine with `npm run ring-check`
+   (tools/ring-check.js) — the one-command gate: completions x3 (`--runs 3`),
+   error, question and the child scenario must all PASS, and the bells must
+   be audible. The tool watches the process table for the alarm CLI
+   (`node ... --event <kind>`) — that process exists only when the bell truly
+   rings. The headless question scenario legitimately rings TWICE: `question`
+   at `form.created`, then `complete` when the auto-cancelled turn finishes;
+   ring-check accepts that follow-up `complete` in the question scenario only
+   (2+ same-kind alarms in one run = regression, e.g. child-dupe or 4x).
+3. `npm test` + `npm run verify:opencode` are necessary but NOT sufficient —
+   they cannot hear the bell.
+4. After a re-bake/install, run ring-check again against the freshly installed
+   copy (the copy is what users run, not the repo).
+5. No commit or release that touches the ringing path without step 2 evidence.
+   When in doubt, re-run it: bells are cheap, a silent release is not.
+6. opencode 2.x trivia that keeps mattering: the server instantiates the
+   plugin file ~4x (every event reaches all instances — the cross-instance
+   lock file is what keeps ONE bell; bypassing it re-introduces 4 overlapping
+   alarms); completion = `session.execution.succeeded`, failure =
+   `session.execution.failed`, question = `form.created`, cancel =
+   `form.cancelled` (silent); V1 names are never emitted on 2.x.
+7. Hardening backlog: teach `tools/verify-opencode.js` (weekly canary) to
+   prove a RING, not just a load — bake a stub CLI that appends its
+   `--event <kind>` to a marker file instead of beeping, run one real session
+   against the private throwaway server, assert the marker. That makes the
+   weekly canary bell-level too.
+
 ## Release state
 
 - `1.0.5` (2026-10-18) — opencode 2.x support (see gotcha above): V2 default
@@ -225,22 +268,38 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   copy re-baked to the npm CLI path (`setup`) and hot-loaded (`opencode
   reload`); `opencode plugin list` lists ai-agent-bell.
   WARNING: 1.0.5 rings NOTHING on opencode 2.x — it listens for the dead V1
-  event names. The fix sits in the working tree (unreleased).
+  event names. Fixed in 1.0.6 (staged, see below).
 - `1.0.6` (2026-10-18) — 2.x ringing fix + cross-instance lock dedup (full
   trace in the gotcha "no bell rings at all on 2.0.32" above). Source
   changes: detectors/completion.js + detectors/error.js (execution-event
   mappings), adapters/opencode-plugin.js (KIND_BY_EVENT), index.mjs (lock
   claim + node imports), tests/smoke.js (claim/takeover/child coverage),
-  README, .gitignore (.debug/). Release flow: version bump → `npm test` →
-  `npm run verify:opencode` → push → `npm stage publish .` → USER approves on
-  npmjs.com (+2FA) → tag `v1.0.6`, `npm i -g ai-agent-bell`, `ai-agent-bell
-  setup` (re-bake: NOW the fixed adapter with the npm CLI path), `opencode
-  reload`. Acceptance after install: `opencode run "Reply with exactly:
-  ok. Do not use any tools."` rings exactly ONE bell (single node alarm
-  process). Machine state until then: the installed plugin copy is baked
-  from the REPO (points at the repo CLI) and already carries the fix — do
-  NOT re-run the global 1.0.5 `setup`; it would overwrite the copy with the
-  old adapter.
+  README, .gitignore (.debug/), tools/ring-check.js + `npm run ring-check`
+  (live ring acceptance; see "The ring is sacred").
+  Release flow (now ring-check-gated): version bump → `npm test` → `npm run
+  verify:opencode` → `npm run ring-check` (all scenarios PASS; bells audible)
+  → push → `npm stage publish .` → USER approves on npmjs.com (+2FA) → tag
+  `v1.0.6`, `npm i -g ai-agent-bell`, `ai-agent-bell setup` (re-bake: NOW the
+  fixed adapter with the npm CLI path), `opencode reload` → run ring-check
+  AGAIN against the installed copy.
+  LIVE EVIDENCE 2026-10-18 (clean, non-instrumented build): ring-check 6/6
+  PASS twice (complete x3 + error + question + child), plus a quick pass and
+  a question-only pass; every run observed EXACTLY ONE alarm process of the
+  expected kind. Child-silence proven twice for real: session exports show
+  subagents `ses_eb060b357ffei6S19Hh1CZ30f4` and
+  `ses_eb05c4819ffeC8WuQf1uMFEtYg` completed MID-turn with NO alarm; only the
+  parent turn end rang (one complete each). Question scenario note: headless
+  auto-cancel legitimately produces `question` + a follow-up `complete` (the
+  turn really finishes after the cancel) — accept both; `form.cancelled`
+  stays silent.
+  STAGED 2026-10-18: id `8b65f938-82aa-407b-9dbb-419e6b23309d`, tarball
+  shasum `96aa6367d71c7798887936693b80228a8f83634f`, built from commit
+  `b266b2a`; the follow-up ring-check/docs commit postdates staging (dev-only
+  files — the staged tarball's runtime bits are identical, tools/ stays
+  excluded by files[]).
+  Machine state until approval: the installed plugin copy is baked from the
+  REPO (points at the repo CLI) and already carries the fix — do NOT re-run
+  the global 1.0.5 `setup`; it would overwrite the copy with the old adapter.
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).
@@ -289,5 +348,8 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
 
 - Keep the layout flat; user-facing surface is the CLI + the one config file.
 - Every behavior change needs a silent smoke check (no real sound in tests).
+- Ringing-path changes also need LIVE evidence before commit/release:
+  `npm run ring-check` (all paths, multiple runs) — see "The ring is sacred".
+  "It loads" is not "it rings".
 - Docs stay layman-simple; internals stay English-only.
 - Commit messages: short imperative subject, no AI-attribution trailers.

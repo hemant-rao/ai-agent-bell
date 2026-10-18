@@ -262,15 +262,16 @@ notifications/           how it tells you (sound, desktop toast, terminal bell)
 lib/                     repeat-count file + orchestration
 adapters/                copy-paste pieces for each AI tool
 tests/                   silent test suite
-tools/                   live opencode compatibility check (verify:opencode)
+tools/                   live checks: opencode compatibility (verify:opencode) + ring acceptance (ring-check)
 index.mjs                opencode npm-plugin entry (ESM default export)
 ```
 
-Run the checks (silent, CI-safe — never plays sound):
+Run the checks (first two are silent and CI-safe; `ring-check` plays REAL sound):
 
 ```bash
 npm test                  # CLI, detectors, adapters, packaging
 npm run verify:opencode   # live: the real opencode must load the plugin
+npm run ring-check        # live: real sessions, the bell must RING (Windows; plays REAL sound)
 ```
 
 `verify:opencode` is a live compatibility check: it installs the plugin into a
@@ -286,6 +287,15 @@ on every publish, and releases go through npm **staged publishing** — the
 tarball is staged, a maintainer approves it with 2FA on npmjs.com, and only
 then does it go live — so a broken tarball can never reach users.
 
+`ring-check` is the release gate for the bell itself. It runs real headless
+sessions on your installed opencode — several completions, a forced failure,
+a question — and watches the process table for the alarm the plugin spawns,
+asserting **exactly one per run** (and a Task-tool subagent whose completion
+must stay silent). It is Windows-only and plays REAL alarms, so it is not in
+CI; run `npm run ring-check` before every release and again after every
+install. Twice a release passed "the plugin loads" while the bell stayed
+silent — loading is not ringing, and this is the check that proves ringing.
+
 Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugins": ["ai-agent-bell"]` to global opencode config (V2; older 1.x used the `"plugin"` key). Never put these inside a project folder.
 
 No-Node fallback: `adapters/no-node-fallback.md`.
@@ -294,7 +304,7 @@ No-Node fallback: `adapters/no-node-fallback.md`.
 
 ## Changelog
 
-- **1.0.6** — OpenCode 2.x ringing fix (1.0.5 was silent on 2.x): finished turns ring from `session.execution.succeeded` and failures from `session.execution.failed` (2.x no longer emits `session.idle`/`session.status`). The host runs several plugin instances per server, so dupe suppression now claims through an exclusive lock file (temp dir) — one bell per completion instead of four overlapping alarms. Subagent (Task-tool child) completions, busy transitions and `form.cancelled` stay silent. Verified live on opencode 2.0.32: complete/question/error each ring exactly once; child sessions ring nothing.
+- **1.0.6** — OpenCode 2.x ringing fix (1.0.5 was silent on 2.x): finished turns ring from `session.execution.succeeded` and failures from `session.execution.failed` (2.x no longer emits `session.idle`/`session.status`). The host runs several plugin instances per server, so dupe suppression now claims through an exclusive lock file (temp dir) — one bell per completion instead of four overlapping alarms. Subagent (Task-tool child) completions, busy transitions and `form.cancelled` stay silent. Verified live on opencode 2.0.32: complete/question/error each ring exactly once; child sessions ring nothing. Release gate added the same day so the bell can never silently regress again: `npm run ring-check` (live acceptance — real sessions, process-verified single alarms, subagent-silence proof; multiple full passes on the clean build).
 - **1.0.5** — OpenCode 2.x support: the plugin now default-exports a V2 definition (`{ id, setup }`) and subscribes to the 2.x event stream (`ctx.event.subscribe`, payloads on `event.data`, `form.created` → question; `permission.asked` kept), fixing "Plugin must export a default definition with an id and an effect or setup function." The old V1 shape (named export returning an `event` hook) no longer loads on 2.x. Still works on opencode 1.18.29+ through the added `server()` entrypoint. npm plugin entry renamed to `index.mjs`. Verified live on opencode 2.0.32. Packaging hardening so this can never silently recur: `exports` map, `prepublishOnly` test gate, tarball-content check in the smoke suite, `npm run verify:opencode` live host check, and GitHub Actions CI + weekly opencode canary.
 - **1.0.4** — No more mid-task false alarms (OpenCode): subagent (Task-tool child) completions stay silent, `session.status` rings on `idle` only (busy/retry silent), `tool.execute.before` rings for the `question` tool only, same-session double-fire (`session.idle` + `session.status`) rings once via cooldown, plus `permission.updated` support. Same guards in both the file-copy plugin and the npm plugin entry.
 - **1.0.3** — Fixed total OpenCode silence: ESM single-export plugin entries, baked node binary spawn (never the host binary), `question.asked` mapped. Verified live on opencode 1.18.35.
