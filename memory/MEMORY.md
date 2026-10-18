@@ -97,7 +97,8 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   live on opencode 2.0.32: `/api/plugin` lists `ai-agent-bell`
   state=active, no post-fix load errors in opencode.log (fixed plugin was
   re-installed with the repo's own `setup --tools opencode`, which baked the
-  REPO CLI path — after publishing, run the installed `setup` again).
+  REPO CLI path; after the 1.0.5 release the installed `setup` re-baked it to
+  the npm path and `opencode reload` hot-loaded it — no service restart).
 - Release safety (added 2026-10-18, so a host-API break like the one above can
   never ship silently again): `npm run verify:opencode`
   (tools/verify-opencode.js) is a LIVE check — throwaway HOME (USERPROFILE +
@@ -125,6 +126,10 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
 - The installed `~/.config/opencode/plugins/ai-agent-bell.js` is a COPY —
   updating the npm package never refreshes it. Users must re-run
   `ai-agent-bell setup` after every update (README troubleshooting says so).
+- `opencode reload` hot-reloads config AND plugins from disk (opencode.log
+  rows: "plugin reconciliation", "loading plugin") — after a setup re-bake
+  just `opencode reload`; no service restart needed. `opencode plugin list`
+  shows loaded plugins and their source paths.
 - Debugging note: `npx <local-path>` (e.g. `npx F:\Project\ai-agent-bell`)
   installs the LOCAL repo into the npm `_npx` cache as a `file:` dependency
   (seen 2026-10-11 masquerading as 1.0.2). A mystery version in `_npx` cache
@@ -182,11 +187,11 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   tarball-content check in smoke (`npm pack --dry-run --json`: runtime files
   present, tests/tools/memory/.github excluded), `npm run verify:opencode`
   live host check (tools/verify-opencode.js), GitHub Actions `ci.yml` + weekly
-  `opencode-canary.yml`. npm publish + tag `v1.0.5` pending at time of
-  writing. Machine state: global npm install is still 1.0.4 (index.js, no
-  exports) and the installed opencode plugin copy is baked to the REPO CLI —
-  after publishing run `npm i -g ai-agent-bell` + `ai-agent-bell setup` again
-  to re-bake to the npm install.
+  `opencode-canary.yml`. RELEASED 2026-10-18 via npm staged publishing (user
+  approved with 2FA on npmjs.com; flow below). Machine state after release:
+  global npm install 1.0.5, tag `v1.0.5` pushed, installed opencode plugin
+  copy re-baked to the npm CLI path (`setup`) and hot-loaded (`opencode
+  reload`); `opencode plugin list` lists ai-agent-bell.
 - `1.0.0` — first public release (npm + tag `v1.0.0`).
 - `1.0.1` — global click/key stop even when minimized; `-WindowStyle Hidden`
   removed (npm + tag `v1.0.1`, GitHub `main` in sync).
@@ -204,19 +209,27 @@ index.mjs                opencode npm-plugin entry (fire-and-forget, quiet, keyS
   mapped to the question alarm. Verified live on opencode 1.18.35
   (Win32_Process showed real `node ... --event complete|question|error`
   spawns, attached CLI exited 0, zero post-fix load errors).
-- Publish flow (1.0.5+): `npm run verify:opencode` first if the installed
-  opencode changed since the last release; `npm publish` runs `npm test`
-  automatically via `prepublishOnly`. Then `npm version patch|minor|major` →
-  `npm publish --access public` → `npm i -g ai-agent-bell` + `ai-agent-bell
-  setup` (re-bake) + `ai-agent-bell test` as a stranger (registry needs
-  ~1 min to serve the new version) → `git push origin main` +
-  `git push origin vX.Y.Z` (tags do NOT ride along with plain `git push`).
-- Publish AUTH (learned 2026-10-11, do not re-learn): token lives in
-  `~/.npmrc` as `//registry.npmjs.org/:_authToken=...`. Expired token → 401
-  on `whoami`; read-only granular token → 403 on publish; granular token
-  without 2FA-bypass → 403 "2FA or bypass required" (account enforces 2FA for
-  publishing). What works: a **classic Automation token** (bypasses 2FA by
-  design). Ask the user to generate it (npmjs.com → Access Tokens).
+- Publish flow (STAGED publishing — required for this account/token since
+  2026-10-18): `npm run verify:opencode` first if opencode changed since the
+  last release; bump the version; `git push origin main`; `npm stage publish
+  .` (still runs `prepublishOnly` tests; no 2FA, works with the stage-only
+  token) → the USER approves it: npmjs.com → user menu → Staged Packages →
+  Approve (+2FA). The stage-only token CANNOT approve (`npm stage approve
+  <id>` → 404, do not retry). `npm stage list` shows validating → staged.
+  After approval: check `npm view ai-agent-bell version` → `git tag vX.Y.Z` +
+  `git push origin vX.Y.Z` (tags never ride along with plain `git push`) →
+  `npm i -g ai-agent-bell` → `ai-agent-bell setup` (re-bake) → `opencode
+  reload` (hot-load; `opencode plugin list` verifies). Stranger check:
+  `ai-agent-bell test`.
+- Publish AUTH (rewritten 2026-10-18): token lives in `~/.npmrc` as
+  `//registry.npmjs.org/:_authToken=...`. The 2026-10-11 classic bypass-2FA
+  token EXPIRED (`whoami` 401; publish 404). The 2026-10-18 replacement GAT
+  is STAGE-ONLY: direct `npm publish` → E_STAGE_REQUIRED ("This token can
+  only publish to a staging area"), `npm stage publish` works, approve → 404.
+  npm policy (2026): bypass GATs lose direct publish (target Jan 2027);
+  staged approval ALWAYS needs interactive 2FA (proof-of-presence). Ask the
+  user for tokens (npmjs.com → Access Tokens). Automation upgrade path:
+  trusted publishing (OIDC) via GitHub Actions.
 - Publish WARNING (benign, verified): npm 11 says `bin[...] was invalid and
   removed` and normalizes `repository.url` on every publish. Ignore it — the
   stranger `npm i -g` check proves the `ai-agent-bell` shims ARE created.

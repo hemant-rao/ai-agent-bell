@@ -281,8 +281,10 @@ opencode changed the plugin API shape between 1.x and 2.x (that is what broke
 the bell once), and only a real host load catches that class of break.
 GitHub Actions runs the silent suite on every push (CI) and re-runs
 `verify:opencode` against the *latest* opencode every week (canary), so a host
-API change goes red before users ever see it. `prepublishOnly` runs the suite,
-so a broken tarball can never be published.
+API change goes red before users ever see it. `prepublishOnly` runs the suite
+on every publish, and releases go through npm **staged publishing** — the
+tarball is staged, a maintainer approves it with 2FA on npmjs.com, and only
+then does it go live — so a broken tarball can never reach users.
 
 Manual wiring (instead of `setup`): copy `adapters/claude-settings-snippet.json` into global `~/.claude/settings.json`, append `adapters/codex-config-snippet.toml` to global `~/.codex/config.toml`, or add `"plugins": ["ai-agent-bell"]` to global opencode config (V2; older 1.x used the `"plugin"` key). Never put these inside a project folder.
 
