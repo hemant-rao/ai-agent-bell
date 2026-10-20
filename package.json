@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-bell",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "AI Agent Bell: a loud alarm when your AI coding agent finishes, fails, or needs your input. Works with OpenCode, Claude Code, Codex CLI and any terminal tool. Global-only: zero project impact, never ships in your build. Local-only: no network, no usage tracking, zero dependencies.",
   "license": "MIT",
   "author": "Hemant Rao",
