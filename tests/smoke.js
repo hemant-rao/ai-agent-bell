@@ -45,6 +45,10 @@ async function main() {
   );
   const help = run(['--help']);
   check('--help exits 0 and documents setup', help.status === 0 && help.stdout.includes('setup'));
+  check('--help documents --no-key-stop', help.stdout.includes('--no-key-stop'));
+  check('--no-key-stop accepted by the parser', run(['--no-key-stop', '--help']).status === 0);
+  check('invalid --key-stop exits 2', run(['--key-stop', 'maybe']).status === 2);
+  check('dangling --key-stop exits 2', run(['config', '--key-stop']).status === 2);
   check('unknown event exits 2', run(['--event', 'foo']).status === 2);
   check('unknown positional exits 2', run(['hello']).status === 2);
   check('dangling --event exits 2', run(['--event']).status === 2);
@@ -72,10 +76,15 @@ async function main() {
       'missing file -> default x5',
       cfgDefault.status === 0 && cfgDefault.stdout.includes('alarm repeats: x5')
     );
+    check(
+      'missing file -> global click/key stop on',
+      cfgDefault.status === 0 && cfgDefault.stdout.includes('global click/key stop: on')
+    );
   } finally {
     fs.rmSync(freshHome, { recursive: true, force: true });
   }
   check('DEFAULT_TIMES is 5', require('../lib/config').DEFAULT_TIMES === 5);
+  check('DEFAULT_KEY_STOP is true', require('../lib/config').DEFAULT_KEY_STOP === true);
   const adapterSrc = fs.readFileSync(path.join(ROOT, 'adapters', 'opencode-plugin.js'), 'utf8');
   check(
     'adapter is a V2 default definition (id + setup), no CJS exports',
@@ -255,6 +264,7 @@ async function main() {
   check('files[] ships bin/', pkgFiles.includes('bin/'));
   check('files[] ships adapters/', pkgFiles.includes('adapters/'));
   check('files[] ships index.mjs', pkgFiles.includes('index.mjs'));
+  check('files[] ships SECURITY.md', pkgFiles.includes('SECURITY.md'));
   check(
     'exports map and main both point at index.mjs',
     !!pkg.exports && pkg.exports['.'] === './index.mjs' && pkg.main === 'index.mjs'
@@ -289,6 +299,7 @@ async function main() {
   const mustShip = [
     'package.json',
     'README.md',
+    'SECURITY.md',
     'LICENSE',
     'index.mjs',
     'bin/ai-agent-bell.js',
@@ -327,6 +338,31 @@ async function main() {
     );
     check('config file holds 8', saved.times === 8);
 
+    const keyOff = run(['config', '--key-stop', 'off'], { USERPROFILE: fakeHome });
+    const savedKeyOff = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check(
+      'config --key-stop off exits 0 and reports off',
+      keyOff.status === 0 && keyOff.stdout.includes('global click/key stop: off')
+    );
+    check('config persists keyStop false', savedKeyOff.keyStop === false);
+
+    const timesKeep = run(['config', '--times', '4'], { USERPROFILE: fakeHome });
+    const savedTimesKeep = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check(
+      'times update preserves keyStop false',
+      timesKeep.status === 0 && savedTimesKeep.times === 4 && savedTimesKeep.keyStop === false
+    );
+
+    const keyOn = run(['config', '--key-stop', 'on'], { USERPROFILE: fakeHome });
+    const savedKeyOn = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check('config --key-stop on persists true', keyOn.status === 0 && savedKeyOn.keyStop === true);
+
     // Pre-existing user configs must be preserved.
     fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
     fs.writeFileSync(
@@ -336,12 +372,46 @@ async function main() {
     fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'model = "x"\n');
 
-    const r1 = run(['setup', '--times', '7'], { USERPROFILE: fakeHome });
+    // FORCE_COLOR=0 keeps this check deterministic even when CI exports color
+    // settings to child processes; the next run tests the green path.
+    const r1 = run(['setup', '--times', '7'], { USERPROFILE: fakeHome, FORCE_COLOR: '0' });
     check('setup exits 0', r1.status === 0);
+    check('setup prints a success message', r1.stdout.includes('SUCCESS: AI Agent Bell is ready.'));
+    check('setup prints the big package name', r1.stdout.includes('A I   A G E N T   B E L L'));
+    check(
+      'setup prints the safety and trust message',
+      r1.stdout.includes('no network calls, no usage tracking') &&
+        r1.stdout.includes('no install scripts')
+    );
+    check(
+      'setup result lines are simple English',
+      r1.stdout.includes('- OpenCode: alarm plugin') &&
+        r1.stdout.includes('- Claude Code: alarm settings') &&
+        r1.stdout.includes('- Codex: alarm settings') &&
+        !r1.stdout.includes('opencode: OpenCode:')
+    );
+    check('setup stays plain when piped (no ANSI codes)', !r1.stdout.includes('\x1b['));
+    const colorRun = run(['setup', '--tools', 'opencode'], {
+      USERPROFILE: fakeHome,
+      FORCE_COLOR: '1',
+    });
+    check(
+      'setup uses green when color is enabled',
+      colorRun.status === 0 && colorRun.stdout.includes('\x1b[32m') && colorRun.stdout.includes('\x1b[0m')
+    );
     const afterSave = JSON.parse(
       fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
     );
     check('setup --times persists 7', afterSave.times === 7);
+
+    const keySetup = run(['setup', '--tools', 'opencode', '--key-stop', 'off'], { USERPROFILE: fakeHome });
+    const afterKeySetup = JSON.parse(
+      fs.readFileSync(path.join(fakeHome, '.config', 'ai-agent-bell', 'config.json'), 'utf8')
+    );
+    check(
+      'setup --key-stop off persists',
+      keySetup.status === 0 && afterKeySetup.keyStop === false
+    );
 
     // Friendly CLI: bare numbers and plain-English filler words (silent: setup/config only).
     const setPlain = run(['setup', 'alarm', 'repeats', '6'], { USERPROFILE: fakeHome });
@@ -412,19 +482,22 @@ async function main() {
     fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), OLD_BLOCK);
     const mig = run(['setup', '--tools', 'codex'], { USERPROFILE: fakeHome });
     const migrated = fs.readFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'utf8');
-    check('migration exits 0', mig.status === 0 && mig.stdout.includes('migrated'));
+    check('migration exits 0', mig.status === 0 && mig.stdout.includes('updated to the new format'));
     check('migration drops old notify line', !migrated.includes('notify ='));
     check('migration adds hooks.Stop', migrated.includes('[[hooks.Stop]]'));
     check('migration keeps PermissionRequest', migrated.includes('[[hooks.PermissionRequest]]'));
     check('migration fully rebranded', !migrated.includes('ai-task-alarm') && !migrated.includes('ai-alarm'));
     const mig2 = run(['setup', '--tools', 'codex'], { USERPROFILE: fakeHome });
-    check('post-migration run is already-present', mig2.stdout.includes('already present'));
+    check('post-migration run is already-present', mig2.stdout.includes('already set up'));
 
     // Opencode: pre-release plugin copy is removed so nothing rings twice.
     const legacyPlugin = path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-task-alarm.js');
     fs.writeFileSync(legacyPlugin, '// legacy copy');
     const leg = run(['setup', '--tools', 'opencode'], { USERPROFILE: fakeHome });
-    check('legacy plugin removed', !fs.existsSync(legacyPlugin) && leg.stdout.includes('legacy'));
+    check(
+      'legacy plugin removed',
+      !fs.existsSync(legacyPlugin) && leg.stdout.includes('old ai-task-alarm.js copy removed')
+    );
     check(
       'current plugin intact',
       fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'plugins', 'ai-agent-bell.js'))
@@ -462,7 +535,7 @@ async function main() {
     const rb = run(['setup', '--tools', 'claude'], { USERPROFILE: fakeHome });
     const rebranded = fs.readFileSync(path.join(fakeHome, '.claude', 'settings.json'), 'utf8');
     const rebrandedObj = JSON.parse(rebranded);
-    check('rebrand exits 0 and reports', rb.status === 0 && rb.stdout.includes('rebranded'));
+    check('rebrand exits 0 and reports', rb.status === 0 && rb.stdout.includes('old alarm'));
     check('rebrand drops old brand', !rebranded.includes('ai-task-alarm') && !rebranded.includes('ai-alarm'));
     check('rebrand keeps one Stop group', rebrandedObj.Stop.length === 1);
     check(

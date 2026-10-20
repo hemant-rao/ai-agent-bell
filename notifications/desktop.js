@@ -10,14 +10,25 @@ function toast(title, message) {
   try {
     if (platform === 'win32') {
       // BurntToast is optional; silently skipped when not installed.
+      // Values travel as env vars, never interpolated into PowerShell code.
       execFileSync(
         'powershell',
         [
           '-NoProfile',
+          '-NonInteractive',
           '-Command',
-          `if (Get-Module -ListAvailable -Name BurntToast) { New-BurntToastNotification -Text "${title}", "${message}" }`,
+          'if (Get-Module -ListAvailable -Name BurntToast) { New-BurntToastNotification -Text $env:AI_AGENT_BELL_TITLE, $env:AI_AGENT_BELL_MESSAGE }',
         ],
-        { stdio: 'ignore', timeout: 5000, windowsHide: true }
+        {
+          stdio: 'ignore',
+          timeout: 5000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            AI_AGENT_BELL_TITLE: String(title),
+            AI_AGENT_BELL_MESSAGE: String(message),
+          },
+        }
       );
     } else if (platform === 'darwin') {
       execFileSync('osascript', ['-e', `display notification "${message}" with title "${title}"`], {

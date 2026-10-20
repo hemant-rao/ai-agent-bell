@@ -45,6 +45,44 @@ const VERSION = (() => {
 })();
 const KNOWN_TOOLS = ['opencode', 'claude', 'codex'];
 
+// Green onboarding banner. Colors only on a real terminal, so piped output
+// (hooks, CI, logs, tests) stays plain and machine-readable.
+function useColor() {
+  if (process.env.FORCE_COLOR !== undefined) return process.env.FORCE_COLOR !== '0';
+  if (process.env.NO_COLOR || process.env.CI) return false;
+  return Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb';
+}
+
+function green(text) {
+  return useColor() ? `\x1b[32m${text}\x1b[0m` : text;
+}
+
+function printSetupSuccess(current, results) {
+  const lines = [
+    '================================================',
+    '        A I   A G E N T   B E L L',
+    `                 v${VERSION}`,
+    '================================================',
+    '',
+    '  SUCCESS: AI Agent Bell is ready.',
+    '  Setup is complete. Your project was not touched.',
+    '',
+    '  - ' + results.join('\n  - '),
+    `  - Alarm repeats: ${current.times} times`,
+    `  - Click/key stop: ${current.keyStop ? 'on' : 'off'}`,
+    '',
+    '  Safe by design: no network calls, no usage tracking,',
+    '  no install scripts, and no project files touched.',
+    '',
+    '  Next step: restart your AI tool,',
+    '  then run: ai-agent-bell test',
+    '',
+    '  To change the number of rings: ai-agent-bell config --times N',
+    '================================================',
+  ];
+  console.log(green(lines.join('\n')));
+}
+
 function printHelp() {
   console.log(`
 ai-agent-bell v${VERSION} — audible alarm for AI coding agents (CMD only)
@@ -54,6 +92,7 @@ USAGE
   ai-agent-bell test                     Ring your saved count (verify a change took effect)
   ai-agent-bell config                   Show repeat-count file and current value
   ai-agent-bell config --times N         Ring N times from now on (1..30)
+  ai-agent-bell config --key-stop off    Disable the Windows global click/key stop
   ai-agent-bell setup [options]          Wire global configs (home dir ONLY, project untouched)
 
 OPTIONS
@@ -61,6 +100,8 @@ OPTIONS
   --times <N>           1..30, one-shot override (default: value from config file)
   --duration <N>        deprecated alias of --times (kept for old hooks)
   --tools <list>        setup only: opencode,claude,codex      (default: all three)
+  --key-stop on|off     Global click/key stop (default: on)
+  --no-key-stop         Same as --key-stop off (one alarm or saved for hooks)
   --quiet               Less console output (sound still plays)
   -h, --help            Show this help
   -v, --version         Show version
@@ -73,13 +114,16 @@ EACH EVENT SOUNDS DIFFERENT
 
 STOPPING EARLY
   Click any mouse button (Windows), press any key in the terminal,
-  or just let all N rounds play.
+  or just let all N rounds play. Turn the global watcher off with
+  "ai-agent-bell config --key-stop off" (or --no-key-stop for one alarm).
 
 EXAMPLES
   ai-agent-bell
   ai-agent-bell --event question --times 5
   ai-agent-bell setup --times 8
   ai-agent-bell config --times 8
+  ai-agent-bell config --key-stop off
+  ai-agent-bell --no-key-stop
   ai-agent-bell 5                        Ring 5 times (same as --times 5)
   ai-agent-bell setup 8                  Same as setup --times 8
 
@@ -116,12 +160,19 @@ function parseTimes(raw, flag) {
   return n;
 }
 
+function parseKeyStop(raw) {
+  const v = String(raw).trim().toLowerCase();
+  if (['on', 'true', '1', 'yes', 'enable', 'enabled'].includes(v)) return true;
+  if (['off', 'false', '0', 'no', 'disable', 'disabled'].includes(v)) return false;
+  fail('--key-stop must be on or off');
+}
+
 // Filler words users naturally type ("ai-agent-bell alarm repeats 3").
 // parseArgs ignores them so the attempt just works instead of erroring.
 const FILLER_WORDS = new Set(['alarm', 'bell', 'repeat', 'repeats', 'time', 'times', 'ring', 'rings']);
 
 function parseArgs(argv) {
-  const out = { event: 'complete', times: undefined, quiet: false, tools: null, cmd: 'alarm' };
+  const out = { event: 'complete', times: undefined, quiet: false, tools: null, keyStop: undefined, cmd: 'alarm' };
   let cmdSeen = null;
   let deprecatedWarned = false;
   for (let i = 0; i < argv.length; i++) {
@@ -156,6 +207,12 @@ function parseArgs(argv) {
       const raw = a.includes('=') ? a.split('=').slice(1).join('=') : takeValue(argv, i, '--tools');
       if (!a.includes('=')) i++;
       out.tools = String(raw).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    } else if (a === '--no-key-stop') {
+      out.keyStop = false;
+    } else if (a === '--key-stop' || a.startsWith('--key-stop=')) {
+      const raw = a.includes('=') ? a.split('=').slice(1).join('=') : takeValue(argv, i, '--key-stop');
+      if (!a.includes('=')) i++;
+      out.keyStop = parseKeyStop(raw);
     } else if (a === '--quiet') out.quiet = true;
     else if (a === '-h' || a === '--help') return { ...out, cmd: 'help' };
     else if (a === '-v' || a === '--version') return { ...out, cmd: 'version' };
@@ -253,7 +310,7 @@ function setupOpencode() {
     const legacy = path.join(dir, 'ai-task-alarm.js');
     if (fs.existsSync(legacy)) {
       fs.unlinkSync(legacy);
-      legacyNote = ' (removed legacy ai-task-alarm.js)';
+      legacyNote = ' (old ai-task-alarm.js copy removed)';
     }
   } catch (_) {
     /* best effort */
@@ -272,14 +329,14 @@ function setupOpencode() {
             `which minimizes your terminal on every alarm. Disable or delete that file ` +
             `(this bell already covers those events).`
         );
-        rogueNote = ' (warning: a foreign -WindowStyle plugin is still active — see above)';
+        rogueNote = ' (warning: an old plugin is still active — see above)';
         break;
       }
     }
   } catch (_) {
     /* best effort */
   }
-  return `${existed ? 'updated' : 'created'} ${dest}${legacyNote}${rogueNote}`;
+  return `OpenCode: alarm plugin ${existed ? 'updated' : 'installed'} at ${dest}${legacyNote}${rogueNote}`;
 }
 
 function setupClaude() {
@@ -320,9 +377,9 @@ function setupClaude() {
   ensure('Notification', 'question', INPUT_NOTIFICATIONS); // actionable input only
 
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
-  const extra = skipped.length ? ` (skipped non-array keys left untouched: ${skipped.join(', ')})` : '';
-  const rebrandNote = rebranded ? ` (rebranded ${rebranded} old entr${rebranded === 1 ? 'y' : 'ies'} to ai-agent-bell)` : '';
-  return `merged hooks into ${file} (Stop=complete, StopFailure=error, Notification=question)${extra}${rebrandNote}`;
+  const extra = skipped.length ? ` (left your custom settings untouched: ${skipped.join(', ')})` : '';
+  const rebrandNote = rebranded ? ` (updated ${rebranded} old alarm entr${rebranded === 1 ? 'y' : 'ies'} to the new name)` : '';
+  return `Claude Code: alarm settings added to ${file}${extra}${rebrandNote}`;
 }
 
 function setupCodex() {
@@ -373,14 +430,14 @@ function setupCodex() {
     fs.writeFileSync(file, cur);
   }
   if (cur.includes(MARK)) {
-    if (cur.includes('[[hooks.Stop]]')) return `already present in ${file}`;
+    if (cur.includes('[[hooks.Stop]]')) return `Codex: alarm settings already set up in ${file}`;
     // Migrate our own pre-Stop block: drop the old top-level `notify`
     // line (any unrelated user `notify` stays untouched), insert Stop group.
     const kept = cur.split('\n').filter((l) => !(l.includes('ai-agent-bell') && /^\s*notify\s*=/.test(l)));
     const at = kept.findIndex((l) => l.includes(MARK));
     kept.splice(at + 1, 0, ...STOP_GROUP);
     fs.writeFileSync(file, kept.join('\n'));
-    return `migrated to [[hooks.Stop]] in ${file} (old notify line removed)`;
+    return `Codex: alarm settings updated to the new format in ${file} (old setting removed)`;
   }
   const block = `
 ${MARK}
@@ -393,7 +450,7 @@ command = "npx -y ai-agent-bell --event question"
 # <<< ai-agent-bell <<<
 `;
   fs.writeFileSync(file, (cur.endsWith('\n') || cur === '' ? cur : cur + '\n') + block);
-  return `appended [[hooks.Stop]]+PermissionRequest to ${file}`;
+  return `Codex: alarm settings added to ${file}`;
 }
 
 function runSetup(opts) {
@@ -405,29 +462,25 @@ function runSetup(opts) {
     console.error(`ai-agent-bell: nothing to set up. Use --tools with any of: ${KNOWN_TOOLS.join(', ')}.`);
     process.exit(2);
   }
-  if (opts.times !== undefined) {
+  if (opts.times !== undefined || opts.keyStop !== undefined) {
     try {
-      config.save(opts.times);
+      config.save(opts.times ?? config.load().times, opts.keyStop);
     } catch (e) {
       fail(e.message);
     }
   }
   const results = [];
-  if (picked.includes('opencode')) results.push('opencode: ' + setupOpencode());
-  if (picked.includes('claude')) results.push('claude: ' + setupClaude());
-  if (picked.includes('codex')) results.push('codex: ' + setupCodex());
-  const current = config.load().times;
-  console.log('[ai-agent-bell] setup done — HOME configs only, project untouched:');
-  for (const r of results) console.log('  - ' + r);
-  console.log(`  - alarm repeats: x${current}  (file: ${config.configPath()})`);
-  console.log('Change the count any time:  ai-agent-bell setup --times N   (no tool re-setup needed)');
-  console.log('\nRestart your AI tool (opencode / claude / codex) so the new hooks load.');
+  if (picked.includes('opencode')) results.push(setupOpencode());
+  if (picked.includes('claude')) results.push(setupClaude());
+  if (picked.includes('codex')) results.push(setupCodex());
+  const current = config.load();
+  printSetupSuccess(current, results);
 }
 
 function runConfig(opts) {
-  if (opts.times !== undefined) {
+  if (opts.times !== undefined || opts.keyStop !== undefined) {
     try {
-      config.save(opts.times);
+      config.save(opts.times ?? config.load().times, opts.keyStop);
     } catch (e) {
       fail(e.message);
     }
@@ -435,8 +488,10 @@ function runConfig(opts) {
   const cur = config.load();
   console.log(`[ai-agent-bell] config file: ${config.configPath()}`);
   console.log(`alarm repeats: x${cur.times}`);
-  if (opts.times === undefined) {
+  console.log(`global click/key stop: ${cur.keyStop ? 'on' : 'off'}`);
+  if (opts.times === undefined && opts.keyStop === undefined) {
     console.log('Change it:  ai-agent-bell config --times N   (N = 1..30)');
+    console.log('Disable the global watcher:  ai-agent-bell config --key-stop off');
   }
 }
 
@@ -453,13 +508,15 @@ async function main() {
     // followed by `test` proves the new value took effect. An explicit
     // `--times N` (or bare number) still gives a custom quick check.
     const n = opts.times ?? config.load().times;
+    const keyStop = opts.keyStop ?? config.load().keyStop;
     if (opts.times === undefined && !opts.quiet) {
       console.log(`[ai-agent-bell] test: playing your saved count x${n} (file: ${config.configPath()})`);
     }
-    await playAlarm({ event: 'complete', times: n, quiet: opts.quiet });
+    await playAlarm({ event: 'complete', times: n, quiet: opts.quiet, keyStop });
     return;
   }
-  await playAlarm({ event: opts.event, times: opts.times, quiet: opts.quiet });
+  const keyStop = opts.keyStop ?? config.load().keyStop;
+  await playAlarm({ event: opts.event, times: opts.times, quiet: opts.quiet, keyStop });
 }
 
 main().catch((e) => {

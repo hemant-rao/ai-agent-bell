@@ -177,7 +177,7 @@ function fallbackBeep(kind) {
         : kind === 'error'
           ? `for ($i=0; $i -lt ${n}; $i++) { [console]::beep(${f},220); Start-Sleep -Milliseconds 150; [console]::beep(${f},220); Start-Sleep -Milliseconds 350 }`
           : `for ($i=0; $i -lt ${n}; $i++) { [console]::beep(${f},700); Start-Sleep -Milliseconds 200 }`;
-    const child = cp.spawn('powershell', ['-NoProfile', '-Command', script], {
+    const child = cp.spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,

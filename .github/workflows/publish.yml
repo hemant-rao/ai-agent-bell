@@ -1,0 +1,52 @@
+name: Publish to npm
+
+# Manual only. `npm stage publish` stages the tarball; a maintainer still
+# approves it with 2FA on npmjs.com, so a broken build cannot go live.
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: npm dist-tag
+        required: true
+        default: latest
+        type: choice
+        options:
+          - latest
+          - next
+
+permissions:
+  contents: read
+  id-token: write # npm provenance (OIDC attestation)
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Stage release with provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use npm with staged publishing + provenance
+        run: |
+          npm install -g npm@11
+          npm --version
+
+      - name: Run the silent test suite
+        run: npm test
+
+      # Add a repository secret named NPM_TOKEN (granular token with publish
+      # access). Preferred: configure npm trusted publishing for this repo and
+      # remove NODE_AUTH_TOKEN — the OIDC id-token permission above is enough.
+      - name: Stage the tarball (2FA approval still happens on npmjs.com)
+        run: npm stage publish --provenance --access public --tag "${{ inputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -219,13 +219,13 @@ async function playSound(detector, times, opts = {}) {
       const budget = n * 3000 + 20000;
       const beepP = runCmd(
         'powershell',
-        ['-NoProfile', '-Command', buildWindowsLoop(detector, n)],
+        ['-NoProfile', '-NonInteractive', '-Command', buildWindowsLoop(detector, n)],
         budget,
         track
       ).then((r) => ({ side: 'beep', r }));
       const watchP = runCmd(
         'powershell',
-        ['-NoProfile', '-Command', buildWindowsWatcher()],
+        ['-NoProfile', '-NonInteractive', '-Command', buildWindowsWatcher()],
         budget,
         track
       ).then((r) => ({ side: 'watch', r }));
